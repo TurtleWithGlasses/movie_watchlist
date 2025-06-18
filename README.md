@@ -33,3 +33,16 @@ Or run the .exe from the /dist folder if you're using a compiled version (via Py
 🧱 Packaging into an Executable
 You can build the app into a Windows .exe using:
 pyinstaller main.py --onefile --windowed --icon=assets/icon.ico --collect-all PySide6
+
+📂 Project Structure
+movie_watchlist_app/
+│
+├── assets/                 # App icons or images
+├── database.py             # SQLite database interface
+├── gui.py                  # Main PySide6 GUI logic
+├── imdb_fetcher.py         # IMDb scraper logic
+├── main.py                 # Entry point
+├── models.py               # Movie class
+├── movie_manager.py        # Movie management logic
+├── requirements.txt
+└── README.md
