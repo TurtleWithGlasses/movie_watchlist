@@ -16,12 +16,6 @@ A simple yet powerful desktop application to organize your movie watchlist, buil
 
 ---
 
-## 🖼 Preview
-
-> _Include a screenshot here if you'd like!_
-
----
-
 ## 🛠 Requirements
 
 - Python 3.10+
@@ -30,6 +24,25 @@ A simple yet powerful desktop application to organize your movie watchlist, buil
 - requests
 
 Install all requirements:
-
-```bash
 pip install -r requirements.txt
+
+🚀 Run the App
+python main.py
+Or run the .exe from the /dist folder if you're using a compiled version (via PyInstaller or Nuitka).
+
+🧱 Packaging into an Executable
+You can build the app into a Windows .exe using:
+pyinstaller main.py --onefile --windowed --icon=assets/icon.ico --collect-all PySide6
+
+📂 Project Structure
+movie_watchlist_app/
+│
+├── assets/                 # App icons or images
+├── database.py             # SQLite database interface
+├── gui.py                  # Main PySide6 GUI logic
+├── imdb_fetcher.py         # IMDb scraper logic
+├── main.py                 # Entry point
+├── models.py               # Movie class
+├── movie_manager.py        # Movie management logic
+├── requirements.txt
+└── README.md
