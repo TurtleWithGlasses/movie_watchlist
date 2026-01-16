@@ -1,0 +1,28 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.spec
+
+# Database
+*.db
+
+# IDE
+.idea/
+.vscode/
+.qodo/
+.claude/
+
+# PyInstaller
+*.manifest
+*.log
+
+# Hooks (PyInstaller)
+hooks/
