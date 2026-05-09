@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QDialog,
     QFileDialog, QDateEdit, QStyledItemDelegate
 )
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6 import QtGui
 from PySide6.QtGui import QIcon
 import webbrowser
@@ -17,6 +17,20 @@ from database import init_db, save_movies, load_movies, export_to_json, import_f
 
 DATE_FORMAT = "dd/MM/yyyy"
 _NULL_DATE = QDate(2000, 1, 1)  # sentinel for "no date selected"
+
+class SmartDateEdit(QDateEdit):
+    """Opens the calendar at the current month when no date is selected."""
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if self.date() == _NULL_DATE:
+            QTimer.singleShot(0, self._go_to_today)
+
+    def _go_to_today(self):
+        cal = self.calendarWidget()
+        if cal and cal.isVisible():
+            today = QDate.currentDate()
+            cal.setCurrentPage(today.year(), today.month())
+
 
 COL_TITLE = 0
 COL_LENGTH = 1
@@ -71,7 +85,7 @@ class MovieWatchlistApp(QWidget):
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("IMDB URL")
 
-        self.date_input = QDateEdit()
+        self.date_input = SmartDateEdit()
         self.date_input.setCalendarPopup(True)
         self.date_input.setDisplayFormat(DATE_FORMAT)
         self.date_input.setMinimumDate(_NULL_DATE)
@@ -302,7 +316,7 @@ class EditDialog(QDialog):
         self.resize(600, 150)
         self.url_input = QLineEdit(current_url)
 
-        self.date_input = QDateEdit()
+        self.date_input = SmartDateEdit()
         self.date_input.setCalendarPopup(True)
         self.date_input.setDisplayFormat(DATE_FORMAT)
         self.date_input.setMinimumDate(_NULL_DATE)
