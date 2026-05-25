@@ -299,6 +299,8 @@ class MovieWatchlistApp(QWidget):
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Title", "Length", "Date", "Days Left", "Platform", "Link"])
+        for col in range(self.table.columnCount()):
+            self.table.horizontalHeaderItem(col).setTextAlignment(Qt.AlignCenter)
         self.table.setItemDelegateForColumn(COL_DATE, DateDelegate(self))
         self.table.setSortingEnabled(True)
         self.table.setAlternatingRowColors(True)
@@ -309,7 +311,7 @@ class MovieWatchlistApp(QWidget):
         self.table.setColumnWidth(COL_TITLE, 220)
         self.table.setColumnWidth(COL_LENGTH, 120)
         self.table.setColumnWidth(COL_DATE, 95)
-        self.table.setColumnWidth(COL_DAYS_LEFT, 80)
+        self.table.setColumnWidth(COL_DAYS_LEFT, 90)
         self.table.setColumnWidth(COL_PLATFORM, 140)
         layout.addWidget(self.table)
 
