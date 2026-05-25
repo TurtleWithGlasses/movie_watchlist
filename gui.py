@@ -71,7 +71,10 @@ class SortableItem(QTableWidgetItem):
                 return my_key < other_key
             except TypeError:
                 pass
-        return super().__lt__(other)
+        # Never call super().__lt__() — PySide6 routes it back into this
+        # Python override, causing infinite recursion. Use text directly.
+        other_text = other.text() if isinstance(other, QTableWidgetItem) else str(other)
+        return self.text() < other_text
 
 
 class DateDelegate(QStyledItemDelegate):
