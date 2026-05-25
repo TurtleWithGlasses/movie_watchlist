@@ -3,7 +3,7 @@ import os
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QDialog,
-    QFileDialog, QDateEdit, QStyledItemDelegate
+    QFileDialog, QDateEdit, QStyledItemDelegate, QComboBox
 )
 from PySide6.QtCore import Qt, QDate, QTimer
 from PySide6 import QtGui
@@ -17,6 +17,21 @@ from database import init_db, save_movies, load_movies, export_to_json, import_f
 
 DATE_FORMAT = "dd/MM/yyyy"
 _NULL_DATE = QDate(2000, 1, 1)  # sentinel for "no date selected"
+
+PLATFORMS = [
+    "",
+    "Netflix",
+    "Amazon Prime Video",
+    "Disney+",
+    "Max",
+    "Apple TV+",
+    "Hulu",
+    "Paramount+",
+    "Peacock",
+    "Tubi",
+    "YouTube Premium",
+    "Other",
+]
 
 class SmartDateEdit(QDateEdit):
     """Opens the calendar at the current month when no date is selected."""
@@ -36,13 +51,27 @@ COL_TITLE = 0
 COL_LENGTH = 1
 COL_DATE = 2
 COL_DAYS_LEFT = 3
-COL_LINK = 4
+COL_PLATFORM = 4
+COL_LINK = 5
 
 
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+
+
+class SortableItem(QTableWidgetItem):
+    """QTableWidgetItem that compares by Qt.UserRole (numeric) when available."""
+    def __lt__(self, other):
+        my_key = self.data(Qt.UserRole)
+        other_key = other.data(Qt.UserRole) if isinstance(other, QTableWidgetItem) else None
+        if my_key is not None and other_key is not None:
+            try:
+                return my_key < other_key
+            except TypeError:
+                pass
+        return super().__lt__(other)
 
 
 class DateDelegate(QStyledItemDelegate):
@@ -72,11 +101,24 @@ class MovieWatchlistApp(QWidget):
         self.table.itemChanged.connect(self.on_item_changed)
 
     def _make_item(self, text, editable=False):
-        item = QTableWidgetItem(text)
+        item = SortableItem(text)
         item.setTextAlignment(Qt.AlignCenter)
         if not editable:
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         return item
+
+    # --- sort key helpers ---
+    def _length_sort_key(self, length_str):
+        m = re.search(r'\((\d+)\s*min\)', length_str)
+        return int(m.group(1)) if m else float('inf')
+
+    def _date_sort_key(self, date_str):
+        date = QDate.fromString(date_str, DATE_FORMAT)
+        return date.toJulianDay() if date.isValid() else float('inf')
+
+    def _days_left_sort_key(self, date_str):
+        date = QDate.fromString(date_str, DATE_FORMAT)
+        return QDate.currentDate().daysTo(date) if date.isValid() else float('inf')
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -92,18 +134,24 @@ class MovieWatchlistApp(QWidget):
         self.date_input.setSpecialValueText("Date to watch")
         self.date_input.setDate(_NULL_DATE)
 
+        self.platform_input = QComboBox()
+        self.platform_input.addItems(PLATFORMS)
+
         input_layout.addWidget(self.url_input)
         input_layout.addWidget(self.date_input)
+        input_layout.addWidget(self.platform_input)
         layout.addLayout(input_layout)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Title", "Length", "Date", "Days Left", "Link"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Title", "Length", "Date", "Days Left", "Platform", "Link"])
         self.table.setItemDelegateForColumn(COL_DATE, DateDelegate(self))
-        self.table.setColumnWidth(COL_TITLE, 250)
-        self.table.setColumnWidth(COL_LENGTH, 130)
-        self.table.setColumnWidth(COL_DATE, 100)
-        self.table.setColumnWidth(COL_DAYS_LEFT, 80)
-        self.table.setColumnWidth(COL_LINK, 170)
+        self.table.setSortingEnabled(True)
+        self.table.setColumnWidth(COL_TITLE, 220)
+        self.table.setColumnWidth(COL_LENGTH, 120)
+        self.table.setColumnWidth(COL_DATE, 95)
+        self.table.setColumnWidth(COL_DAYS_LEFT, 75)
+        self.table.setColumnWidth(COL_PLATFORM, 130)
+        self.table.setColumnWidth(COL_LINK, 160)
         layout.addWidget(self.table)
 
         button_layout = QHBoxLayout()
@@ -130,9 +178,10 @@ class MovieWatchlistApp(QWidget):
         layout.addLayout(button_layout)
         self.setLayout(layout)
 
-        for url, title, length, date in load_movies():
-            self.manager.add_movie(Movie(url, title, length, date))
-            self._insert_row(url, title, length, date)
+        for url, title, length, date, platform in load_movies():
+            self.manager.add_movie(Movie(url, title, length, date, platform))
+            self._insert_row(url, title, length, date, platform)
+        self.table.sortByColumn(COL_DAYS_LEFT, Qt.AscendingOrder)
 
     def _days_left_text(self, date_str):
         date = QDate.fromString(date_str, DATE_FORMAT)
@@ -145,27 +194,48 @@ class MovieWatchlistApp(QWidget):
             return str(days)
         return f"{abs(days)}d ago"
 
-    def _insert_row(self, url, title, length, date):
+    def _insert_row(self, url, title, length, date, platform=""):
+        self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
         row = self.table.rowCount()
         self.table.insertRow(row)
+
         self.table.setItem(row, COL_TITLE, self._make_item(title))
-        self.table.setItem(row, COL_LENGTH, self._make_item(length))
-        self.table.setItem(row, COL_DATE, self._make_item(date, editable=True))
-        self.table.setItem(row, COL_DAYS_LEFT, self._make_item(self._days_left_text(date)))
+
+        length_item = self._make_item(length)
+        length_item.setData(Qt.UserRole, self._length_sort_key(length))
+        self.table.setItem(row, COL_LENGTH, length_item)
+
+        date_item = self._make_item(date, editable=True)
+        date_item.setData(Qt.UserRole, self._date_sort_key(date))
+        self.table.setItem(row, COL_DATE, date_item)
+
+        days_item = self._make_item(self._days_left_text(date))
+        days_item.setData(Qt.UserRole, self._days_left_sort_key(date))
+        self.table.setItem(row, COL_DAYS_LEFT, days_item)
+
+        self.table.setItem(row, COL_PLATFORM, self._make_item(platform))
+
         link_item = self._make_item(url)
         link_item.setForeground(QtGui.QColor("blue"))
         self.table.setItem(row, COL_LINK, link_item)
+
         self.table.blockSignals(False)
+        self.table.setSortingEnabled(True)
 
     def on_item_changed(self, item):
         if item.column() != COL_DATE:
             return
+        self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
+        date_str = item.text()
+        item.setData(Qt.UserRole, self._date_sort_key(date_str))
         days_item = self.table.item(item.row(), COL_DAYS_LEFT)
         if days_item:
-            days_item.setText(self._days_left_text(item.text()))
+            days_item.setText(self._days_left_text(date_str))
+            days_item.setData(Qt.UserRole, self._days_left_sort_key(date_str))
         self.table.blockSignals(False)
+        self.table.setSortingEnabled(True)
 
     def add_movie(self):
         url = self.url_input.text().strip()
@@ -179,14 +249,16 @@ class MovieWatchlistApp(QWidget):
         date = ""
         if self.date_input.date() != _NULL_DATE:
             date = self.date_input.date().toString(DATE_FORMAT)
+        platform = self.platform_input.currentText()
 
         title, length = fetch_movie_info(url)
         if title and length:
-            movie = Movie(url, title, length, date)
+            movie = Movie(url, title, length, date, platform)
             self.manager.add_movie(movie)
-            self._insert_row(url, title, length, date)
+            self._insert_row(url, title, length, date, platform)
             self.url_input.clear()
             self.date_input.setDate(_NULL_DATE)
+            self.platform_input.setCurrentIndex(0)
         else:
             QMessageBox.critical(self, "Error", "Failed to fetch movie data.")
 
@@ -202,22 +274,37 @@ class MovieWatchlistApp(QWidget):
             return
         current_url = self.table.item(selected, COL_LINK).text()
         current_date = self.table.item(selected, COL_DATE).text()
+        current_platform = self.table.item(selected, COL_PLATFORM).text()
 
-        dialog = EditDialog(current_url, current_date, self)
+        dialog = EditDialog(current_url, current_date, current_platform, self)
         if dialog.exec():
-            new_url, new_date = dialog.get_data()
+            new_url, new_date, new_platform = dialog.get_data()
             new_title, new_length = fetch_movie_info(new_url)
             if new_title and new_length:
+                self.table.setSortingEnabled(False)
                 self.table.blockSignals(True)
                 self.table.setItem(selected, COL_TITLE, self._make_item(new_title))
-                self.table.setItem(selected, COL_LENGTH, self._make_item(new_length))
-                self.table.setItem(selected, COL_DATE, self._make_item(new_date, editable=True))
-                self.table.setItem(selected, COL_DAYS_LEFT, self._make_item(self._days_left_text(new_date)))
+
+                length_item = self._make_item(new_length)
+                length_item.setData(Qt.UserRole, self._length_sort_key(new_length))
+                self.table.setItem(selected, COL_LENGTH, length_item)
+
+                date_item = self._make_item(new_date, editable=True)
+                date_item.setData(Qt.UserRole, self._date_sort_key(new_date))
+                self.table.setItem(selected, COL_DATE, date_item)
+
+                days_item = self._make_item(self._days_left_text(new_date))
+                days_item.setData(Qt.UserRole, self._days_left_sort_key(new_date))
+                self.table.setItem(selected, COL_DAYS_LEFT, days_item)
+
+                self.table.setItem(selected, COL_PLATFORM, self._make_item(new_platform))
+
                 link_item = self._make_item(new_url)
                 link_item.setForeground(QtGui.QColor("blue"))
                 self.table.setItem(selected, COL_LINK, link_item)
                 self.table.blockSignals(False)
-                self.manager.edit_movie(selected, Movie(new_url, new_title, new_length, new_date))
+                self.table.setSortingEnabled(True)
+                self.manager.edit_movie(selected, Movie(new_url, new_title, new_length, new_date, new_platform))
             else:
                 QMessageBox.warning(self, "Error", "Failed to fetch movie info.")
 
@@ -236,6 +323,7 @@ class MovieWatchlistApp(QWidget):
             self.table.selectRow(row + 1)
 
     def swap_rows(self, row1, row2):
+        self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
         for col in range(self.table.columnCount()):
             item1 = self.table.item(row1, col)
@@ -243,20 +331,24 @@ class MovieWatchlistApp(QWidget):
             text1, text2 = item1.text(), item2.text()
             fg1, fg2 = item1.foreground(), item2.foreground()
             flags1, flags2 = item1.flags(), item2.flags()
+            key1, key2 = item1.data(Qt.UserRole), item2.data(Qt.UserRole)
 
-            new1 = QTableWidgetItem(text2)
+            new1 = SortableItem(text2)
             new1.setTextAlignment(Qt.AlignCenter)
             new1.setForeground(fg2)
             new1.setFlags(flags2)
+            new1.setData(Qt.UserRole, key2)
 
-            new2 = QTableWidgetItem(text1)
+            new2 = SortableItem(text1)
             new2.setTextAlignment(Qt.AlignCenter)
             new2.setForeground(fg1)
             new2.setFlags(flags1)
+            new2.setData(Qt.UserRole, key1)
 
             self.table.setItem(row1, col, new1)
             self.table.setItem(row2, col, new2)
         self.table.blockSignals(False)
+        self.table.setSortingEnabled(True)
 
     def open_link(self, row, column):
         if column == COL_LINK:
@@ -275,8 +367,9 @@ class MovieWatchlistApp(QWidget):
                 title = self.table.item(row, COL_TITLE).text()
                 length = self.table.item(row, COL_LENGTH).text()
                 date = self.table.item(row, COL_DATE).text()
+                platform = self.table.item(row, COL_PLATFORM).text()
                 url = self.table.item(row, COL_LINK).text()
-                movies.append(Movie(url, title, length, date))
+                movies.append(Movie(url, title, length, date, platform))
             try:
                 export_to_json(movies, filepath)
                 QMessageBox.information(self, "Success", "Movies exported successfully.")
@@ -288,10 +381,10 @@ class MovieWatchlistApp(QWidget):
         if filepath:
             try:
                 imported = import_from_json(filepath)
-                for url, title, length, date in imported:
-                    movie = Movie(url, title, length, date)
+                for url, title, length, date, platform in imported:
+                    movie = Movie(url, title, length, date, platform)
                     self.manager.add_movie(movie)
-                    self._insert_row(url, title, length, date)
+                    self._insert_row(url, title, length, date, platform)
                 QMessageBox.information(self, "Success", f"Imported {len(imported)} movies.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to import: {e}")
@@ -302,18 +395,19 @@ class MovieWatchlistApp(QWidget):
             title = self.table.item(row, COL_TITLE).text()
             length = self.table.item(row, COL_LENGTH).text()
             date = self.table.item(row, COL_DATE).text()
+            platform = self.table.item(row, COL_PLATFORM).text()
             url_item = self.table.item(row, COL_LINK)
             url = url_item.text() if url_item else ""
-            self.manager.add_movie(Movie(url, title, length, date))
+            self.manager.add_movie(Movie(url, title, length, date, platform))
         save_movies(self.manager.movies)
         event.accept()
 
 
 class EditDialog(QDialog):
-    def __init__(self, current_url, current_date, parent=None):
+    def __init__(self, current_url, current_date, current_platform="", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Movie")
-        self.resize(600, 150)
+        self.resize(600, 180)
         self.url_input = QLineEdit(current_url)
 
         self.date_input = SmartDateEdit()
@@ -324,9 +418,18 @@ class EditDialog(QDialog):
         date = QDate.fromString(current_date, DATE_FORMAT)
         self.date_input.setDate(date if date.isValid() else _NULL_DATE)
 
+        self.platform_input = QComboBox()
+        self.platform_input.addItems(PLATFORMS)
+        if current_platform in PLATFORMS:
+            self.platform_input.setCurrentText(current_platform)
+
         layout = QVBoxLayout()
         layout.addWidget(self.url_input)
-        layout.addWidget(self.date_input)
+
+        date_platform_layout = QHBoxLayout()
+        date_platform_layout.addWidget(self.date_input)
+        date_platform_layout.addWidget(self.platform_input)
+        layout.addLayout(date_platform_layout)
 
         btn_layout = QHBoxLayout()
         ok_btn = QPushButton("OK")
@@ -343,7 +446,7 @@ class EditDialog(QDialog):
         date = ""
         if self.date_input.date() != _NULL_DATE:
             date = self.date_input.date().toString(DATE_FORMAT)
-        return self.url_input.text(), date
+        return self.url_input.text(), date, self.platform_input.currentText()
 
 
 def run_app():
