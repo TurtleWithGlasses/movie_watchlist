@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QDateEdit, QStyledItemDelegate, QComboBox, QLabel,
     QProgressBar
 )
-from PySide6.QtCore import Qt, QDate, QTimer, QThread, Signal
+from PySide6.QtCore import Qt, QDate, QTimer, QThread, Signal, QSettings
 from PySide6 import QtGui
 from PySide6.QtGui import QIcon
 import webbrowser
@@ -333,7 +333,10 @@ class MovieWatchlistApp(QWidget):
         icon_path = get_resource_path(os.path.join("assets", "movie-icon-15159.png"))
         self.setWindowIcon(QIcon(icon_path))
         self.manager = MovieManager()
+        self._sort_col = COL_DAYS_LEFT
+        self._sort_order = Qt.AscendingOrder
         self.init_ui()
+        self._restore_settings()
         self.table.cellClicked.connect(self.open_link)
         self.table.itemChanged.connect(self.on_item_changed)
 
@@ -367,6 +370,40 @@ class MovieWatchlistApp(QWidget):
         date = QDate.fromString(date_str, DATE_FORMAT)
         return QDate.currentDate().daysTo(date) if date.isValid() else float('inf')
 
+    def _on_header_clicked(self, col):
+        if col == self._sort_col:
+            self._sort_order = (Qt.DescendingOrder if self._sort_order == Qt.AscendingOrder
+                                else Qt.AscendingOrder)
+        else:
+            self._sort_col = col
+            self._sort_order = Qt.AscendingOrder
+        self.table.sortItems(self._sort_col, self._sort_order)
+        self.table.horizontalHeader().setSortIndicator(self._sort_col, self._sort_order)
+
+    def _restore_settings(self):
+        s = QSettings("MovieWatchlist", "MovieWatchlist")
+        geom = s.value("window_geometry")
+        if geom:
+            self.restoreGeometry(geom)
+        else:
+            self.resize(900, 700)
+        self._sort_col = int(s.value("sort_col", COL_DAYS_LEFT))
+        self._sort_order = Qt.SortOrder(int(s.value("sort_order", int(Qt.AscendingOrder))))
+        for col in range(self.table.columnCount()):
+            w = s.value(f"col_width_{col}")
+            if w is not None:
+                self.table.setColumnWidth(col, int(w))
+        self.table.sortItems(self._sort_col, self._sort_order)
+        self.table.horizontalHeader().setSortIndicator(self._sort_col, self._sort_order)
+
+    def _save_settings(self):
+        s = QSettings("MovieWatchlist", "MovieWatchlist")
+        s.setValue("window_geometry", self.saveGeometry())
+        s.setValue("sort_col", self._sort_col)
+        s.setValue("sort_order", int(self._sort_order))
+        for col in range(self.table.columnCount()):
+            s.setValue(f"col_width_{col}", self.table.columnWidth(col))
+
     def init_ui(self):
         layout = QVBoxLayout()
         layout.setContentsMargins(16, 16, 16, 16)
@@ -399,7 +436,8 @@ class MovieWatchlistApp(QWidget):
         for col in range(self.table.columnCount()):
             self.table.horizontalHeaderItem(col).setTextAlignment(Qt.AlignCenter)
         self.table.setItemDelegateForColumn(COL_DATE, DateDelegate(self))
-        self.table.setSortingEnabled(True)
+        self.table.setSortingEnabled(False)
+        self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -442,7 +480,9 @@ class MovieWatchlistApp(QWidget):
         for url, title, length, date, platform in load_movies():
             self.manager.add_movie(Movie(url, title, length, date, platform))
             self._insert_row(url, title, length, date, platform)
-        self.table.sortByColumn(COL_DAYS_LEFT, Qt.AscendingOrder)
+        # Default sort — overridden by _restore_settings if saved prefs exist
+        self.table.sortItems(COL_DAYS_LEFT, Qt.AscendingOrder)
+        self.table.horizontalHeader().setSortIndicator(COL_DAYS_LEFT, Qt.AscendingOrder)
 
     def _days_left_text(self, date_str):
         date = QDate.fromString(date_str, DATE_FORMAT)
@@ -456,7 +496,6 @@ class MovieWatchlistApp(QWidget):
         return f"{abs(days)}d ago"
 
     def _insert_row(self, url, title, length, date, platform=""):
-        self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -488,12 +527,10 @@ class MovieWatchlistApp(QWidget):
         self.table.setItem(row, COL_LINK, link_item)
 
         self.table.blockSignals(False)
-        self.table.setSortingEnabled(True)
 
     def on_item_changed(self, item):
         if item.column() != COL_DATE:
             return
-        self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
         date_str = item.text()
         item.setData(Qt.UserRole, self._date_sort_key(date_str))
@@ -506,7 +543,6 @@ class MovieWatchlistApp(QWidget):
             days_item.setBackground(bg if bg else QtGui.QBrush())
             days_item.setForeground(fg if fg else QtGui.QBrush())
         self.table.blockSignals(False)
-        self.table.setSortingEnabled(True)
 
     def add_movie(self):
         url = self.url_input.text().strip()
@@ -552,7 +588,6 @@ class MovieWatchlistApp(QWidget):
             new_url, new_date, new_platform = dialog.get_data()
             new_title, new_length = fetch_movie_info(new_url)
             if new_title and new_length:
-                self.table.setSortingEnabled(False)
                 self.table.blockSignals(True)
                 self.table.setItem(selected, COL_TITLE, self._make_item(new_title))
 
@@ -580,7 +615,6 @@ class MovieWatchlistApp(QWidget):
                 link_item.setForeground(QtGui.QColor("blue"))
                 self.table.setItem(selected, COL_LINK, link_item)
                 self.table.blockSignals(False)
-                self.table.setSortingEnabled(True)
                 self.manager.edit_movie(selected, Movie(new_url, new_title, new_length, new_date, new_platform))
             else:
                 QMessageBox.warning(self, "Error", "Failed to fetch movie info.")
@@ -600,7 +634,6 @@ class MovieWatchlistApp(QWidget):
             self.table.selectRow(row + 1)
 
     def swap_rows(self, row1, row2):
-        self.table.setSortingEnabled(False)
         self.table.blockSignals(True)
         for col in range(self.table.columnCount()):
             item1 = self.table.item(row1, col)
@@ -628,7 +661,9 @@ class MovieWatchlistApp(QWidget):
             self.table.setItem(row1, col, new1)
             self.table.setItem(row2, col, new2)
         self.table.blockSignals(False)
-        self.table.setSortingEnabled(True)
+        # Manual reorder clears the active sort so re-sort doesn't undo the move
+        self._sort_col = -1
+        self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
 
     def open_link(self, row, column):
         if column == COL_LINK:
@@ -680,6 +715,7 @@ class MovieWatchlistApp(QWidget):
             url = url_item.text() if url_item else ""
             self.manager.add_movie(Movie(url, title, length, date, platform))
         save_movies(self.manager.movies)
+        self._save_settings()
 
         # Push updated db to Google Drive (silent if not configured)
         try:
@@ -753,7 +789,6 @@ def run_app():
     app = QApplication(sys.argv)
     app.setStyleSheet(APP_STYLE)
     window = MovieWatchlistApp()
-    window.resize(900, 700)
     window.show()
 
     # Background update check — fires 2 s after startup so it never blocks the UI
