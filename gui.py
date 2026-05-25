@@ -18,6 +18,143 @@ from database import init_db, save_movies, load_movies, export_to_json, import_f
 DATE_FORMAT = "dd/MM/yyyy"
 _NULL_DATE = QDate(2000, 1, 1)  # sentinel for "no date selected"
 
+APP_STYLE = """
+/* ── Global ────────────────────────────────── */
+QWidget {
+    font-family: 'Segoe UI', 'Arial';
+    font-size: 13px;
+    color: #1E293B;
+    background-color: #F1F5F9;
+}
+
+/* ── Text inputs ───────────────────────────── */
+QLineEdit {
+    background: #FFFFFF;
+    border: 1.5px solid #CBD5E1;
+    border-radius: 6px;
+    padding: 7px 12px;
+    selection-background-color: #BFDBFE;
+}
+QLineEdit:focus { border-color: #3B82F6; }
+
+/* ── Date / Combo ──────────────────────────── */
+QDateEdit, QComboBox {
+    background: #FFFFFF;
+    border: 1.5px solid #CBD5E1;
+    border-radius: 6px;
+    padding: 7px 10px;
+}
+QDateEdit:focus, QComboBox:focus { border-color: #3B82F6; }
+QDateEdit::drop-down, QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+QComboBox QAbstractItemView {
+    background: #FFFFFF;
+    border: 1px solid #CBD5E1;
+    outline: none;
+    selection-background-color: #EFF6FF;
+    selection-color: #2563EB;
+}
+
+/* ── Table ─────────────────────────────────── */
+QTableWidget {
+    background: #FFFFFF;
+    alternate-background-color: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 10px;
+    gridline-color: #E2E8F0;
+}
+QTableWidget::item { padding: 5px 8px; }
+QTableWidget::item:selected {
+    background: #EFF6FF;
+    color: #1D4ED8;
+}
+
+/* ── Column headers ────────────────────────── */
+QHeaderView::section {
+    background: #1E293B;
+    color: #F1F5F9;
+    padding: 10px 8px;
+    font-weight: bold;
+    font-size: 12px;
+    border: none;
+    border-right: 1px solid #334155;
+}
+QHeaderView::section:last  { border-right: none; }
+QHeaderView::section:hover { background: #334155; }
+
+/* Row-number header */
+QHeaderView::section:vertical {
+    background: #F8FAFC;
+    color: #94A3B8;
+    font-weight: normal;
+    font-size: 11px;
+    border: none;
+    border-bottom: 1px solid #E2E8F0;
+    padding: 0 6px;
+}
+
+/* ── Buttons ───────────────────────────────── */
+QPushButton {
+    background: #3B82F6;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: 600;
+    font-size: 12px;
+    min-width: 68px;
+}
+QPushButton:hover   { background: #2563EB; }
+QPushButton:pressed { background: #1D4ED8; }
+
+QPushButton#danger          { background: #EF4444; }
+QPushButton#danger:hover    { background: #DC2626; }
+QPushButton#danger:pressed  { background: #B91C1C; }
+
+QPushButton#secondary         { background: #64748B; }
+QPushButton#secondary:hover   { background: #475569; }
+QPushButton#secondary:pressed { background: #334155; }
+
+/* ── Scroll bars ───────────────────────────── */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #CBD5E1;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover { background: #94A3B8; }
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical { height: 0; }
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+    margin: 0;
+}
+QScrollBar::handle:horizontal {
+    background: #CBD5E1;
+    border-radius: 4px;
+    min-width: 24px;
+}
+QScrollBar::handle:horizontal:hover { background: #94A3B8; }
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal { width: 0; }
+"""
+
+# Urgency palette for the Days Left cell
+_URGENCY = [
+    # (max_days, bg_hex,   fg_hex)
+    (0,  "#FEE2E2", "#991B1B"),   # last day / overdue  → red
+    (7,  "#FEF3C7", "#92400E"),   # ≤ 7 days            → amber
+    (14, "#DCFCE7", "#166534"),   # ≤ 14 days           → green
+]
+
 PLATFORMS = [
     "",
     "Netflix",
@@ -110,6 +247,16 @@ class MovieWatchlistApp(QWidget):
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         return item
 
+    # --- urgency color for Days Left cell ---
+    def _urgency_color(self, sort_key):
+        """Return (QBrush bg, QBrush fg) for a days-left sort key, or (None, None)."""
+        if sort_key == float('inf'):
+            return None, None
+        for max_days, bg_hex, fg_hex in _URGENCY:
+            if sort_key <= max_days:
+                return QtGui.QBrush(QtGui.QColor(bg_hex)), QtGui.QBrush(QtGui.QColor(fg_hex))
+        return None, None
+
     # --- sort key helpers ---
     def _length_sort_key(self, length_str):
         m = re.search(r'\((\d+)\s*min\)', length_str)
@@ -125,8 +272,11 @@ class MovieWatchlistApp(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         input_layout = QHBoxLayout()
+        input_layout.setSpacing(10)
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("IMDB URL")
 
@@ -136,9 +286,11 @@ class MovieWatchlistApp(QWidget):
         self.date_input.setMinimumDate(_NULL_DATE)
         self.date_input.setSpecialValueText("Date to watch")
         self.date_input.setDate(_NULL_DATE)
+        self.date_input.setFixedWidth(140)
 
         self.platform_input = QComboBox()
         self.platform_input.addItems(PLATFORMS)
+        self.platform_input.setFixedWidth(160)
 
         input_layout.addWidget(self.url_input)
         input_layout.addWidget(self.date_input)
@@ -149,22 +301,29 @@ class MovieWatchlistApp(QWidget):
         self.table.setHorizontalHeaderLabels(["Title", "Length", "Date", "Days Left", "Platform", "Link"])
         self.table.setItemDelegateForColumn(COL_DATE, DateDelegate(self))
         self.table.setSortingEnabled(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setDefaultSectionSize(38)
+        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(COL_TITLE, 220)
         self.table.setColumnWidth(COL_LENGTH, 120)
         self.table.setColumnWidth(COL_DATE, 95)
-        self.table.setColumnWidth(COL_DAYS_LEFT, 75)
-        self.table.setColumnWidth(COL_PLATFORM, 130)
-        self.table.setColumnWidth(COL_LINK, 160)
+        self.table.setColumnWidth(COL_DAYS_LEFT, 80)
+        self.table.setColumnWidth(COL_PLATFORM, 140)
         layout.addWidget(self.table)
 
         button_layout = QHBoxLayout()
-        self.add_button = QPushButton("Add")
+        button_layout.setSpacing(8)
+        self.add_button    = QPushButton("Add")
         self.remove_button = QPushButton("Remove")
-        self.edit_button = QPushButton("Edit")
-        self.up_button = QPushButton("↑")
-        self.down_button = QPushButton("↓")
+        self.edit_button   = QPushButton("Edit")
+        self.up_button     = QPushButton("↑")
+        self.down_button   = QPushButton("↓")
         self.export_button = QPushButton("Export")
         self.import_button = QPushButton("Import")
+
+        self.remove_button.setObjectName("danger")
 
         self.add_button.clicked.connect(self.add_movie)
         self.remove_button.clicked.connect(self.remove_movie)
@@ -213,8 +372,14 @@ class MovieWatchlistApp(QWidget):
         date_item.setData(Qt.UserRole, self._date_sort_key(date))
         self.table.setItem(row, COL_DATE, date_item)
 
+        days_key = self._days_left_sort_key(date)
         days_item = self._make_item(self._days_left_text(date))
-        days_item.setData(Qt.UserRole, self._days_left_sort_key(date))
+        days_item.setData(Qt.UserRole, days_key)
+        bg, fg = self._urgency_color(days_key)
+        if bg:
+            days_item.setBackground(bg)
+        if fg:
+            days_item.setForeground(fg)
         self.table.setItem(row, COL_DAYS_LEFT, days_item)
 
         self.table.setItem(row, COL_PLATFORM, self._make_item(platform))
@@ -235,8 +400,12 @@ class MovieWatchlistApp(QWidget):
         item.setData(Qt.UserRole, self._date_sort_key(date_str))
         days_item = self.table.item(item.row(), COL_DAYS_LEFT)
         if days_item:
+            days_key = self._days_left_sort_key(date_str)
             days_item.setText(self._days_left_text(date_str))
-            days_item.setData(Qt.UserRole, self._days_left_sort_key(date_str))
+            days_item.setData(Qt.UserRole, days_key)
+            bg, fg = self._urgency_color(days_key)
+            days_item.setBackground(bg if bg else QtGui.QBrush())
+            days_item.setForeground(fg if fg else QtGui.QBrush())
         self.table.blockSignals(False)
         self.table.setSortingEnabled(True)
 
@@ -296,8 +465,14 @@ class MovieWatchlistApp(QWidget):
                 date_item.setData(Qt.UserRole, self._date_sort_key(new_date))
                 self.table.setItem(selected, COL_DATE, date_item)
 
+                new_days_key = self._days_left_sort_key(new_date)
                 days_item = self._make_item(self._days_left_text(new_date))
-                days_item.setData(Qt.UserRole, self._days_left_sort_key(new_date))
+                days_item.setData(Qt.UserRole, new_days_key)
+                bg, fg = self._urgency_color(new_days_key)
+                if bg:
+                    days_item.setBackground(bg)
+                if fg:
+                    days_item.setForeground(fg)
                 self.table.setItem(selected, COL_DAYS_LEFT, days_item)
 
                 self.table.setItem(selected, COL_PLATFORM, self._make_item(new_platform))
@@ -333,18 +508,21 @@ class MovieWatchlistApp(QWidget):
             item2 = self.table.item(row2, col)
             text1, text2 = item1.text(), item2.text()
             fg1, fg2 = item1.foreground(), item2.foreground()
+            bg1, bg2 = item1.background(), item2.background()
             flags1, flags2 = item1.flags(), item2.flags()
             key1, key2 = item1.data(Qt.UserRole), item2.data(Qt.UserRole)
 
             new1 = SortableItem(text2)
             new1.setTextAlignment(Qt.AlignCenter)
             new1.setForeground(fg2)
+            new1.setBackground(bg2)
             new1.setFlags(flags2)
             new1.setData(Qt.UserRole, key2)
 
             new2 = SortableItem(text1)
             new2.setTextAlignment(Qt.AlignCenter)
             new2.setForeground(fg1)
+            new2.setBackground(bg1)
             new2.setFlags(flags1)
             new2.setData(Qt.UserRole, key1)
 
@@ -427,6 +605,8 @@ class EditDialog(QDialog):
             self.platform_input.setCurrentText(current_platform)
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
         layout.addWidget(self.url_input)
 
         date_platform_layout = QHBoxLayout()
@@ -435,8 +615,10 @@ class EditDialog(QDialog):
         layout.addLayout(date_platform_layout)
 
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
         ok_btn = QPushButton("OK")
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("secondary")
         btn_layout.addWidget(ok_btn)
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
@@ -455,6 +637,7 @@ class EditDialog(QDialog):
 def run_app():
     init_db()
     app = QApplication(sys.argv)
+    app.setStyleSheet(APP_STYLE)
     window = MovieWatchlistApp()
     window.resize(900, 700)
     window.show()
