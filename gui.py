@@ -17,6 +17,7 @@ from models import Movie
 from database import init_db, save_movies, load_movies, export_to_json, import_from_json
 from version import __version__
 from updater import get_latest_release, is_newer, download_update, apply_update
+from cloud_sync import is_configured, download_db, upload_db
 
 DATE_FORMAT = "dd/MM/yyyy"
 _NULL_DATE = QDate(2000, 1, 1)  # sentinel for "no date selected"
@@ -679,6 +680,14 @@ class MovieWatchlistApp(QWidget):
             url = url_item.text() if url_item else ""
             self.manager.add_movie(Movie(url, title, length, date, platform))
         save_movies(self.manager.movies)
+
+        # Push updated db to Google Drive (silent if not configured)
+        try:
+            if is_configured():
+                upload_db("watchlist.db")
+        except Exception as e:
+            print(f"Cloud sync upload skipped: {e}")
+
         event.accept()
 
 
@@ -733,6 +742,13 @@ class EditDialog(QDialog):
 
 
 def run_app():
+    # Pull latest db from Google Drive before opening (silent if not configured)
+    try:
+        if is_configured():
+            download_db("watchlist.db")
+    except Exception as e:
+        print(f"Cloud sync download skipped: {e}")
+
     init_db()
     app = QApplication(sys.argv)
     app.setStyleSheet(APP_STYLE)
