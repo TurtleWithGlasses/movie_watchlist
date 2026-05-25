@@ -388,7 +388,8 @@ class MovieWatchlistApp(QWidget):
         else:
             self.resize(900, 700)
         self._sort_col = int(s.value("sort_col", COL_DAYS_LEFT))
-        self._sort_order = Qt.SortOrder(int(s.value("sort_order", int(Qt.AscendingOrder))))
+        order_val = int(s.value("sort_order", 0))
+        self._sort_order = Qt.DescendingOrder if order_val == 1 else Qt.AscendingOrder
         for col in range(self.table.columnCount()):
             w = s.value(f"col_width_{col}")
             if w is not None:
@@ -400,7 +401,7 @@ class MovieWatchlistApp(QWidget):
         s = QSettings("MovieWatchlist", "MovieWatchlist")
         s.setValue("window_geometry", self.saveGeometry())
         s.setValue("sort_col", self._sort_col)
-        s.setValue("sort_order", int(self._sort_order))
+        s.setValue("sort_order", 1 if self._sort_order == Qt.DescendingOrder else 0)
         for col in range(self.table.columnCount()):
             s.setValue(f"col_width_{col}", self.table.columnWidth(col))
 
