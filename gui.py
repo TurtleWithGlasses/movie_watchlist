@@ -3,9 +3,10 @@ import os
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QDialog,
-    QFileDialog, QDateEdit, QStyledItemDelegate, QComboBox
+    QFileDialog, QDateEdit, QStyledItemDelegate, QComboBox, QLabel,
+    QProgressBar
 )
-from PySide6.QtCore import Qt, QDate, QTimer
+from PySide6.QtCore import Qt, QDate, QTimer, QThread, Signal
 from PySide6 import QtGui
 from PySide6.QtGui import QIcon
 import webbrowser
@@ -14,6 +15,8 @@ from imdb_fetcher import fetch_movie_info
 from movie_manager import MovieManager
 from models import Movie
 from database import init_db, save_movies, load_movies, export_to_json, import_from_json
+from version import __version__
+from updater import get_latest_release, is_newer, download_update, apply_update
 
 DATE_FORMAT = "dd/MM/yyyy"
 _NULL_DATE = QDate(2000, 1, 1)  # sentinel for "no date selected"
@@ -227,6 +230,99 @@ class DateDelegate(QStyledItemDelegate):
 
     def setModelData(self, editor, model, index):
         model.setData(index, editor.date().toString(DATE_FORMAT), Qt.EditRole)
+
+
+class UpdateCheckWorker(QThread):
+    update_available = Signal(str, str)  # (latest_tag, download_url)
+
+    def run(self):
+        tag, url = get_latest_release()
+        if tag and url and is_newer(__version__, tag):
+            self.update_available.emit(tag, url)
+
+
+class DownloadWorker(QThread):
+    progress = Signal(int)
+    finished = Signal(str)   # path to downloaded file
+    error = Signal(str)
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        try:
+            path = download_update(self.url, self.progress.emit)
+            self.finished.emit(path)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class UpdateDialog(QDialog):
+    def __init__(self, latest_tag, download_url, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Update Available")
+        self.setFixedWidth(420)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self._download_url = download_url
+        self._worker = None
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        info = QLabel(
+            f"<b>Version {latest_tag} is available.</b><br>"
+            f"You are on version {__version__}.<br><br>"
+            "Download and install now?"
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.hide()
+        layout.addWidget(self._progress)
+
+        self._status = QLabel("")
+        self._status.hide()
+        layout.addWidget(self._status)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._update_btn = QPushButton("Update Now")
+        self._skip_btn = QPushButton("Skip")
+        self._skip_btn.setObjectName("secondary")
+        btn_row.addWidget(self._update_btn)
+        btn_row.addWidget(self._skip_btn)
+        layout.addLayout(btn_row)
+
+        self.setLayout(layout)
+        self._update_btn.clicked.connect(self._start_download)
+        self._skip_btn.clicked.connect(self.reject)
+
+    def _start_download(self):
+        self._update_btn.setEnabled(False)
+        self._skip_btn.setEnabled(False)
+        self._progress.show()
+        self._status.setText("Downloading…")
+        self._status.show()
+
+        self._worker = DownloadWorker(self._download_url)
+        self._worker.progress.connect(self._progress.setValue)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
+
+    def _on_finished(self, new_exe_path):
+        self._status.setText("Installing update…")
+        apply_update(new_exe_path)
+        QApplication.quit()
+
+    def _on_error(self, msg):
+        self._status.setText(f"Error: {msg}")
+        self._update_btn.setEnabled(True)
+        self._skip_btn.setEnabled(True)
 
 
 class MovieWatchlistApp(QWidget):
@@ -643,4 +739,12 @@ def run_app():
     window = MovieWatchlistApp()
     window.resize(900, 700)
     window.show()
+
+    # Background update check — fires 2 s after startup so it never blocks the UI
+    _checker = UpdateCheckWorker()
+    _checker.update_available.connect(
+        lambda tag, url: UpdateDialog(tag, url, window).exec()
+    )
+    QTimer.singleShot(2000, _checker.start)
+
     sys.exit(app.exec())
