@@ -72,19 +72,26 @@ def apply_update(tmp_exe_path):
     shutil.move(tmp_exe_path, staged)
 
     bat_path = os.path.join(current_dir, "_updater.bat")
+    log_path = os.path.join(current_dir, "_updater_log.txt")
+    # Use ping instead of timeout: timeout needs a console, ping works anywhere.
+    # ping -n 26 = 25 one-second intervals = ~25 s wait.
     bat = (
         "@echo off\n"
-        # 25 s is more than enough for the app to exit + PyInstaller _MEI cleanup
-        "timeout /t 25 /nobreak >nul\n"
-        # Retry the move until the exe is fully released (AV, OS locks)
+        f'echo [1] bat started >{log_path}\n'
+        "ping 127.0.0.1 -n 26 >nul\n"
+        f'echo [2] wait done >>{log_path}\n'
         ":move\n"
         f'move /y "{staged}" "{current_exe}"\n'
         "if errorlevel 1 (\n"
-        "    timeout /t 2 /nobreak >nul\n"
+        f'    echo [3] move failed >>{log_path}\n'
+        "    ping 127.0.0.1 -n 3 >nul\n"
         "    goto move\n"
         ")\n"
+        f'echo [4] move ok >>{log_path}\n'
         f'start "" "{current_exe}"\n'
-        "timeout /t 2 /nobreak >nul\n"
+        f'echo [5] start called >>{log_path}\n'
+        "ping 127.0.0.1 -n 3 >nul\n"
+        f'del "{log_path}"\n'
         'del "%~f0"\n'
     )
     with open(bat_path, "w") as f:
