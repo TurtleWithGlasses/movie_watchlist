@@ -73,30 +73,43 @@ def apply_update(tmp_exe_path):
 
     pid = os.getpid()
     ps1_path = os.path.join(current_dir, "_updater.ps1")
-    # Use single quotes inside the script so PowerShell doesn't expand variables
-    # at write-time. All {pid}/{staged}/{current_exe} are Python f-string expansions.
+    log_path = os.path.join(current_dir, "_updater_log.txt")
+    # $PID is a PowerShell built-in constant — never use it as a variable name.
+    # Use $appPid instead to avoid the conflict.
     script = (
-        f"$pid = {pid}\n"
+        f"$appPid = {pid}\n"
+        f"$log   = '{log_path}'\n"
+        f"$dest  = '{current_exe}'\n"
+        f"$src   = '{staged}'\n"
+        '"[" + (Get-Date -f "HH:mm:ss") + "] Updater started, waiting for PID " + $appPid | Out-File $log\n'
         # Wait until the old process is fully gone (reliable — no tasklist quirks)
-        "while (Get-Process -Id $pid -ErrorAction SilentlyContinue) {\n"
+        "while (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {\n"
         "    Start-Sleep -Seconds 1\n"
         "}\n"
+        '"[" + (Get-Date -f "HH:mm:ss") + "] Process exited, waiting 8s for cleanup" | Out-File $log -Append\n'
         # Extra wait for PyInstaller to finish removing its _MEI temp directory
-        "Start-Sleep -Seconds 6\n"
+        "Start-Sleep -Seconds 8\n"
         # Retry the move until antivirus / OS releases any remaining lock
         "$moved = $false\n"
         "for ($i = 0; $i -lt 20 -and -not $moved; $i++) {\n"
         "    try {\n"
-        f"        Move-Item -Force -Path '{staged}' -Destination '{current_exe}' -ErrorAction Stop\n"
+        "        Move-Item -Force -Path $src -Destination $dest -ErrorAction Stop\n"
         "        $moved = $true\n"
+        '        "[" + (Get-Date -f "HH:mm:ss") + "] Move succeeded on attempt " + ($i+1) | Out-File $log -Append\n'
         "    } catch {\n"
+        '        "[" + (Get-Date -f "HH:mm:ss") + "] Move attempt " + ($i+1) + " failed: " + $_.Exception.Message | Out-File $log -Append\n'
         "        Start-Sleep -Seconds 2\n"
         "    }\n"
         "}\n"
         "if ($moved) {\n"
-        f"    Start-Process -FilePath '{current_exe}'\n"
+        "    Start-Process -FilePath $dest\n"
+        '    "[" + (Get-Date -f "HH:mm:ss") + "] New exe launched — done" | Out-File $log -Append\n'
+        "    Start-Sleep -Seconds 3\n"
+        "    Remove-Item $log -Force -ErrorAction SilentlyContinue\n"
+        "    Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
+        "} else {\n"
+        '    "[" + (Get-Date -f "HH:mm:ss") + "] FAILED: could not move after 20 attempts" | Out-File $log -Append\n'
         "}\n"
-        "Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
     )
     with open(ps1_path, "w", encoding="utf-8") as f:
         f.write(script)

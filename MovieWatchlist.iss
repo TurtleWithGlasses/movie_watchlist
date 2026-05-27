@@ -62,4 +62,5 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 Type: files; Name: "{app}\token.json"
 Type: files; Name: "{app}\_update_staged.exe"
 Type: files; Name: "{app}\_updater.ps1"
+Type: files; Name: "{app}\_updater_log.txt"
 Type: files; Name: "{app}\watchlist.db"
