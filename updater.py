@@ -58,7 +58,8 @@ def download_update(url, progress_callback=None):
 def apply_update(tmp_exe_path):
     """
     Stage the downloaded exe next to the current one, then launch a detached
-    bat script that waits for this process to exit, swaps the file, and restarts.
+    PowerShell script that waits for this process to fully exit (including
+    PyInstaller temp-dir cleanup), swaps the file, and restarts.
     Only works when running as a packaged exe (sys.frozen).
     """
     if not getattr(sys, "frozen", False):
@@ -67,38 +68,47 @@ def apply_update(tmp_exe_path):
     current_exe = os.path.abspath(sys.executable)
     current_dir = os.path.dirname(current_exe)
 
-    # Move to the app directory so bat's `move` stays on the same drive/volume.
     staged = os.path.join(current_dir, "_update_staged.exe")
     shutil.move(tmp_exe_path, staged)
 
     pid = os.getpid()
-    bat_path = os.path.join(current_dir, "_updater.bat")
-    bat = (
-        "@echo off\n"
-        ":wait\n"
-        f'tasklist /fi "pid eq {pid}" 2>nul | find "{pid}" >nul\n'
-        "if not errorlevel 1 (\n"
-        "    timeout /t 1 /nobreak >nul\n"
-        "    goto wait\n"
-        ")\n"
-        # Wait for the OS to fully release file locks after the process exits
-        "timeout /t 3 /nobreak >nul\n"
-        # Retry the move until it succeeds (antivirus or OS may briefly lock the file)
-        ":move\n"
-        f'move /y "{staged}" "{current_exe}"\n'
-        "if errorlevel 1 (\n"
-        "    timeout /t 2 /nobreak >nul\n"
-        "    goto move\n"
-        ")\n"
-        f'start "" "{current_exe}"\n'
-        "timeout /t 2 /nobreak >nul\n"
-        'del "%~f0"\n'
+    ps1_path = os.path.join(current_dir, "_updater.ps1")
+    # Use single quotes inside the script so PowerShell doesn't expand variables
+    # at write-time. All {pid}/{staged}/{current_exe} are Python f-string expansions.
+    script = (
+        f"$pid = {pid}\n"
+        # Wait until the old process is fully gone (reliable — no tasklist quirks)
+        "while (Get-Process -Id $pid -ErrorAction SilentlyContinue) {\n"
+        "    Start-Sleep -Seconds 1\n"
+        "}\n"
+        # Extra wait for PyInstaller to finish removing its _MEI temp directory
+        "Start-Sleep -Seconds 6\n"
+        # Retry the move until antivirus / OS releases any remaining lock
+        "$moved = $false\n"
+        "for ($i = 0; $i -lt 20 -and -not $moved; $i++) {\n"
+        "    try {\n"
+        f"        Move-Item -Force -Path '{staged}' -Destination '{current_exe}' -ErrorAction Stop\n"
+        "        $moved = $true\n"
+        "    } catch {\n"
+        "        Start-Sleep -Seconds 2\n"
+        "    }\n"
+        "}\n"
+        "if ($moved) {\n"
+        f"    Start-Process -FilePath '{current_exe}'\n"
+        "}\n"
+        "Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
     )
-    with open(bat_path, "w") as f:
-        f.write(bat)
+    with open(ps1_path, "w", encoding="utf-8") as f:
+        f.write(script)
 
     subprocess.Popen(
-        ["cmd.exe", "/c", bat_path],
+        [
+            "powershell.exe",
+            "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden",
+            "-NonInteractive",
+            "-File", ps1_path,
+        ],
         creationflags=subprocess.CREATE_NO_WINDOW,
         close_fds=True,
     )
