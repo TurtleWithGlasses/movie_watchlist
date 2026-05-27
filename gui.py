@@ -16,7 +16,8 @@ from movie_manager import MovieManager
 from models import Movie
 from database import init_db, save_movies, load_movies, export_to_json, import_from_json
 from version import __version__
-from updater import get_latest_release, is_newer, download_update, apply_update
+from updater import (get_latest_release, is_newer, download_update,
+                     apply_update, do_staged_update, cleanup_old_version)
 from cloud_sync import is_configured, download_db, upload_db
 
 DATE_FORMAT = "dd/MM/yyyy"
@@ -762,6 +763,9 @@ class MovieWatchlistApp(QWidget):
             print(f"Cloud sync upload skipped: {e}")
 
         event.accept()
+        # If a staged update is waiting, rename-swap and relaunch now that
+        # all data is saved. Windows allows renaming a running exe safely.
+        do_staged_update()
 
 
 class EditDialog(QDialog):
@@ -815,6 +819,9 @@ class EditDialog(QDialog):
 
 
 def run_app():
+    # Remove _old_version.exe left over from a previous update (if any)
+    cleanup_old_version()
+
     # Pull latest db from Google Drive before opening (silent if not configured)
     try:
         if is_configured():

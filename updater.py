@@ -57,48 +57,80 @@ def download_update(url, progress_callback=None):
 
 def apply_update(tmp_exe_path):
     """
-    Stage the downloaded exe next to the current one, then launch a detached
-    cmd.exe bat that waits a fixed time for this process to exit, swaps the
-    file, and restarts.  Fixed wait avoids all process-detection unreliability.
-    Only works when running as a packaged exe (sys.frozen).
+    Move the downloaded exe to _update_staged.exe next to the current exe.
+    The actual swap is performed by do_staged_update(), called from closeEvent
+    after all data has been saved.
+    Only has effect when running as a packaged exe (sys.frozen).
     """
     if not getattr(sys, "frozen", False):
         return
-
-    current_exe = os.path.abspath(sys.executable)
-    current_dir = os.path.dirname(current_exe)
-
+    current_dir = os.path.dirname(os.path.abspath(sys.executable))
     staged = os.path.join(current_dir, "_update_staged.exe")
     shutil.move(tmp_exe_path, staged)
 
-    bat_path = os.path.join(current_dir, "_updater.bat")
-    log_path = os.path.join(current_dir, "_updater_log.txt")
-    # Use ping instead of timeout: timeout needs a console, ping works anywhere.
-    # ping -n 26 = 25 one-second intervals = ~25 s wait.
-    bat = (
-        "@echo off\n"
-        f'echo [1] bat started >{log_path}\n'
-        "ping 127.0.0.1 -n 26 >nul\n"
-        f'echo [2] wait done >>{log_path}\n'
-        ":move\n"
-        f'move /y "{staged}" "{current_exe}"\n'
-        "if errorlevel 1 (\n"
-        f'    echo [3] move failed >>{log_path}\n'
-        "    ping 127.0.0.1 -n 3 >nul\n"
-        "    goto move\n"
-        ")\n"
-        f'echo [4] move ok >>{log_path}\n'
-        f'start "" "{current_exe}"\n'
-        f'echo [5] start called >>{log_path}\n'
-        "ping 127.0.0.1 -n 3 >nul\n"
-        f'del "{log_path}"\n'
-        'del "%~f0"\n'
-    )
-    with open(bat_path, "w") as f:
-        f.write(bat)
 
-    subprocess.Popen(
-        ["cmd.exe", "/c", bat_path],
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        close_fds=True,
-    )
+def do_staged_update():
+    """
+    If _update_staged.exe exists, perform an atomic rename-based swap and
+    relaunch.  Windows allows renaming a running exe, so this is safe to call
+    from closeEvent after data is saved — no external bat/ps1 script needed.
+
+    Steps:
+      1. Rename the running exe to _old_version.exe  (still runs fine)
+      2. Rename _update_staged.exe to the original exe name
+      3. Launch the new exe
+      4. The current process finishes closing normally
+
+    Returns True if the new exe was launched, False if nothing to do or error.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    current_exe = os.path.abspath(sys.executable)
+    current_dir = os.path.dirname(current_exe)
+    staged = os.path.join(current_dir, "_update_staged.exe")
+    if not os.path.exists(staged):
+        return False
+
+    old_exe = os.path.join(current_dir, "_old_version.exe")
+    try:
+        # Clean up any leftover from a previous failed update
+        if os.path.exists(old_exe):
+            os.remove(old_exe)
+        # Step 1 — rename ourselves out of the way
+        os.rename(current_exe, old_exe)
+    except Exception:
+        return False
+
+    try:
+        # Step 2 — put the new exe in our place
+        os.rename(staged, current_exe)
+    except Exception:
+        # Restore our original name before giving up
+        try:
+            os.rename(old_exe, current_exe)
+        except Exception:
+            pass
+        return False
+
+    # Step 3 — launch the new exe and let the current process finish closing
+    try:
+        subprocess.Popen([current_exe])
+    except Exception:
+        pass
+    return True
+
+
+def cleanup_old_version():
+    """
+    Delete _old_version.exe if it exists (left over from a previous update).
+    Called at startup so the file is removed once the old process has exited.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    current_dir = os.path.dirname(os.path.abspath(sys.executable))
+    old_exe = os.path.join(current_dir, "_old_version.exe")
+    try:
+        if os.path.exists(old_exe):
+            os.remove(old_exe)
+    except Exception:
+        pass  # Old process may not have fully exited yet; retry next startup
