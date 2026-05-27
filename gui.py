@@ -349,7 +349,7 @@ class UpdateDialog(QDialog):
 class MovieWatchlistApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Movie Watchlist")
+        self.setWindowTitle(f"Movie Watchlist v{__version__}")
         icon_path = get_resource_path(os.path.join("assets", "movie-icon-15159.png"))
         self.setWindowIcon(QIcon(icon_path))
         self.manager = MovieManager()
