@@ -58,8 +58,8 @@ def download_update(url, progress_callback=None):
 def apply_update(tmp_exe_path):
     """
     Stage the downloaded exe next to the current one, then launch a detached
-    PowerShell script that waits for this process to fully exit (including
-    PyInstaller temp-dir cleanup), swaps the file, and restarts.
+    cmd.exe bat that waits a fixed time for this process to exit, swaps the
+    file, and restarts.  Fixed wait avoids all process-detection unreliability.
     Only works when running as a packaged exe (sys.frozen).
     """
     if not getattr(sys, "frozen", False):
@@ -71,57 +71,27 @@ def apply_update(tmp_exe_path):
     staged = os.path.join(current_dir, "_update_staged.exe")
     shutil.move(tmp_exe_path, staged)
 
-    pid = os.getpid()
-    ps1_path = os.path.join(current_dir, "_updater.ps1")
-    log_path = os.path.join(current_dir, "_updater_log.txt")
-    # $PID is a PowerShell built-in constant — never use it as a variable name.
-    # Use $appPid instead to avoid the conflict.
-    script = (
-        f"$appPid = {pid}\n"
-        f"$log   = '{log_path}'\n"
-        f"$dest  = '{current_exe}'\n"
-        f"$src   = '{staged}'\n"
-        '"[" + (Get-Date -f "HH:mm:ss") + "] Updater started, waiting for PID " + $appPid | Out-File $log\n'
-        # Wait until the old process is fully gone (reliable — no tasklist quirks)
-        "while (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {\n"
-        "    Start-Sleep -Seconds 1\n"
-        "}\n"
-        '"[" + (Get-Date -f "HH:mm:ss") + "] Process exited, waiting 8s for cleanup" | Out-File $log -Append\n'
-        # Extra wait for PyInstaller to finish removing its _MEI temp directory
-        "Start-Sleep -Seconds 8\n"
-        # Retry the move until antivirus / OS releases any remaining lock
-        "$moved = $false\n"
-        "for ($i = 0; $i -lt 20 -and -not $moved; $i++) {\n"
-        "    try {\n"
-        "        Move-Item -Force -Path $src -Destination $dest -ErrorAction Stop\n"
-        "        $moved = $true\n"
-        '        "[" + (Get-Date -f "HH:mm:ss") + "] Move succeeded on attempt " + ($i+1) | Out-File $log -Append\n'
-        "    } catch {\n"
-        '        "[" + (Get-Date -f "HH:mm:ss") + "] Move attempt " + ($i+1) + " failed: " + $_.Exception.Message | Out-File $log -Append\n'
-        "        Start-Sleep -Seconds 2\n"
-        "    }\n"
-        "}\n"
-        "if ($moved) {\n"
-        "    Start-Process -FilePath $dest\n"
-        '    "[" + (Get-Date -f "HH:mm:ss") + "] New exe launched — done" | Out-File $log -Append\n'
-        "    Start-Sleep -Seconds 3\n"
-        "    Remove-Item $log -Force -ErrorAction SilentlyContinue\n"
-        "    Remove-Item $PSCommandPath -Force -ErrorAction SilentlyContinue\n"
-        "} else {\n"
-        '    "[" + (Get-Date -f "HH:mm:ss") + "] FAILED: could not move after 20 attempts" | Out-File $log -Append\n'
-        "}\n"
+    bat_path = os.path.join(current_dir, "_updater.bat")
+    bat = (
+        "@echo off\n"
+        # 25 s is more than enough for the app to exit + PyInstaller _MEI cleanup
+        "timeout /t 25 /nobreak >nul\n"
+        # Retry the move until the exe is fully released (AV, OS locks)
+        ":move\n"
+        f'move /y "{staged}" "{current_exe}"\n'
+        "if errorlevel 1 (\n"
+        "    timeout /t 2 /nobreak >nul\n"
+        "    goto move\n"
+        ")\n"
+        f'start "" "{current_exe}"\n'
+        "timeout /t 2 /nobreak >nul\n"
+        'del "%~f0"\n'
     )
-    with open(ps1_path, "w", encoding="utf-8") as f:
-        f.write(script)
+    with open(bat_path, "w") as f:
+        f.write(bat)
 
     subprocess.Popen(
-        [
-            "powershell.exe",
-            "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden",
-            "-NonInteractive",
-            "-File", ps1_path,
-        ],
+        ["cmd.exe", "/c", bat_path],
         creationflags=subprocess.CREATE_NO_WINDOW,
         close_fds=True,
     )
