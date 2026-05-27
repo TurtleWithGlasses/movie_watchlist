@@ -81,8 +81,17 @@ def apply_update(tmp_exe_path):
         "    timeout /t 1 /nobreak >nul\n"
         "    goto wait\n"
         ")\n"
+        # Wait for the OS to fully release file locks after the process exits
+        "timeout /t 3 /nobreak >nul\n"
+        # Retry the move until it succeeds (antivirus or OS may briefly lock the file)
+        ":move\n"
         f'move /y "{staged}" "{current_exe}"\n'
+        "if errorlevel 1 (\n"
+        "    timeout /t 2 /nobreak >nul\n"
+        "    goto move\n"
+        ")\n"
         f'start "" "{current_exe}"\n'
+        "timeout /t 2 /nobreak >nul\n"
         'del "%~f0"\n'
     )
     with open(bat_path, "w") as f:
