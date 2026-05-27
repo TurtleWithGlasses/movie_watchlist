@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QDialog,
     QFileDialog, QDateEdit, QStyledItemDelegate, QComboBox, QLabel,
-    QProgressBar
+    QProgressBar, QCalendarWidget
 )
 from PySide6.QtCore import Qt, QDate, QTimer, QThread, Signal, QSettings
 from PySide6 import QtGui
@@ -186,6 +186,26 @@ class SmartDateEdit(QDateEdit):
         if cal and cal.isVisible():
             today = QDate.currentDate()
             cal.setCurrentPage(today.year(), today.month())
+
+    def show_calendar(self):
+        """Open a calendar popup positioned below this widget."""
+        popup = QDialog(self, Qt.Popup)
+        cal = QCalendarWidget(popup)
+        cal.setSelectedDate(
+            self.date() if self.date() != _NULL_DATE else QDate.currentDate()
+        )
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(cal)
+        popup.setLayout(layout)
+
+        def on_activated(date):
+            self.setDate(date)
+            popup.close()
+
+        cal.activated.connect(on_activated)
+        popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+        popup.show()
 
 
 COL_TITLE = 0
@@ -423,13 +443,25 @@ class MovieWatchlistApp(QWidget):
         self.date_input.setDate(_NULL_DATE)
         self.date_input.setFixedWidth(140)
 
+        self.cal_btn = QPushButton("📅")
+        self.cal_btn.setFixedWidth(38)
+        self.cal_btn.setToolTip("Open calendar")
+        self.cal_btn.clicked.connect(self.date_input.show_calendar)
+
         self.platform_input = QComboBox()
         self.platform_input.addItems(PLATFORMS)
         self.platform_input.setFixedWidth(160)
 
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setObjectName("secondary")
+        self.clear_btn.setFixedWidth(68)
+        self.clear_btn.clicked.connect(self._clear_inputs)
+
         input_layout.addWidget(self.url_input)
         input_layout.addWidget(self.date_input)
+        input_layout.addWidget(self.cal_btn)
         input_layout.addWidget(self.platform_input)
+        input_layout.addWidget(self.clear_btn)
         layout.addLayout(input_layout)
 
         self.table = QTableWidget(0, 6)
@@ -564,11 +596,15 @@ class MovieWatchlistApp(QWidget):
             movie = Movie(url, title, length, date, platform)
             self.manager.add_movie(movie)
             self._insert_row(url, title, length, date, platform)
-            self.url_input.clear()
-            self.date_input.setDate(_NULL_DATE)
-            self.platform_input.setCurrentIndex(0)
+            self._clear_inputs()
         else:
             QMessageBox.critical(self, "Error", "Failed to fetch movie data.")
+
+    def _clear_inputs(self):
+        self.url_input.clear()
+        self.date_input.setDate(_NULL_DATE)
+        self.platform_input.setCurrentIndex(0)
+        self.url_input.setFocus()
 
     def remove_movie(self):
         selected = self.table.currentRow()
