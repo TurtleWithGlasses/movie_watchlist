@@ -1,5 +1,5 @@
 #define MyAppName "Movie Watchlist"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.9.1"
 #define MyAppPublisher "TurtleWithGlasses"
 #define MyAppExeName "MovieWatchlist.exe"
 #define MyAppInstallDir "{localappdata}\MovieWatchlist"
