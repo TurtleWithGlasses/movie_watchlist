@@ -324,8 +324,8 @@ class UpdateDialog(QDialog):
         self._skip_btn.clicked.connect(self.reject)
 
     def _start_download(self):
-        self._update_btn.setEnabled(False)
-        self._skip_btn.setEnabled(False)
+        self._update_btn.hide()
+        self._skip_btn.hide()
         self._progress.show()
         self._status.setText("Downloading…")
         self._status.show()
@@ -343,8 +343,8 @@ class UpdateDialog(QDialog):
 
     def _on_error(self, msg):
         self._status.setText(f"Error: {msg}")
-        self._update_btn.setEnabled(True)
-        self._skip_btn.setEnabled(True)
+        self._update_btn.show()
+        self._skip_btn.show()
 
 
 class MovieWatchlistApp(QWidget):
