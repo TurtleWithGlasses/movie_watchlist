@@ -4,11 +4,12 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QDialog,
     QFileDialog, QDateEdit, QStyledItemDelegate, QComboBox, QLabel,
-    QProgressBar, QCalendarWidget
+    QProgressBar, QCalendarWidget, QStyleOptionViewItem
 )
 from PySide6.QtCore import Qt, QDate, QTimer, QThread, Signal, QSettings
 from PySide6 import QtGui
 from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QStyle
 import webbrowser
 import re
 from imdb_fetcher import fetch_movie_info
@@ -22,6 +23,7 @@ from cloud_sync import is_configured, download_db, upload_db
 
 DATE_FORMAT = "dd/MM/yyyy"
 _NULL_DATE = QDate(2000, 1, 1)  # sentinel for "no date selected"
+_HAS_FOCUS_MASK = 0x100  # QStyle.StateFlag.HasFocus — stable Qt constant, avoids strict-enum int() issues
 
 APP_STYLE = """
 /* ── Global ────────────────────────────────── */
@@ -70,11 +72,18 @@ QTableWidget {
     border-radius: 10px;
     gridline-color: #E2E8F0;
 }
+QTableWidget { outline: none; }
 QTableWidget::item { padding: 5px 8px; }
 QTableWidget::item:selected {
     background: #EFF6FF;
     color: #1D4ED8;
 }
+/* Suppress native OS blue on hover and focus — no explicit rule → fallback to native */
+QTableWidget::item:focus       { background: transparent; border: none; }
+QTableWidget::item:hover       { background: transparent; }
+/* More-specific combined states keep selected appearance */
+QTableWidget::item:selected:focus { background: #EFF6FF; color: #1D4ED8; }
+QTableWidget::item:selected:hover { background: #EFF6FF; color: #1D4ED8; }
 
 /* ── Column headers ────────────────────────── */
 QHeaderView::section {
@@ -239,7 +248,23 @@ class SortableItem(QTableWidgetItem):
         return self.text() < other_text
 
 
-class DateDelegate(QStyledItemDelegate):
+class NoFocusDelegate(QStyledItemDelegate):
+    """Removes the solid-blue current-cell overlay (State_HasFocus).
+
+    Owns the full draw path: copy option → initStyleOption → strip HasFocus bit
+    via raw integer mask → drawControl.  Never calls super().paint() because
+    that re-invokes initStyleOption internally and would restore the flag."""
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        # .value works on both QFlags and PySide6 strict-enum StateFlag objects
+        opt.state = QStyle.State(opt.state.value & ~_HAS_FOCUS_MASK)
+        widget = option.widget
+        style = widget.style() if widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+
+
+class DateDelegate(NoFocusDelegate):
     def createEditor(self, parent, option, index):
         editor = QDateEdit(parent)
         editor.setCalendarPopup(True)
@@ -469,6 +494,7 @@ class MovieWatchlistApp(QWidget):
         self.table.setHorizontalHeaderLabels(["Title", "Length", "Date", "Days Left", "Platform", "Link"])
         for col in range(self.table.columnCount()):
             self.table.horizontalHeaderItem(col).setTextAlignment(Qt.AlignCenter)
+        self.table.setItemDelegate(NoFocusDelegate(self))
         self.table.setItemDelegateForColumn(COL_DATE, DateDelegate(self))
         self.table.setSortingEnabled(False)
         self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
