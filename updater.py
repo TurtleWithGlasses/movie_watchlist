@@ -112,9 +112,19 @@ def do_staged_update():
             pass
         return False
 
-    # Step 3 — launch the new exe and let the current process finish closing
+    # Step 3 — launch the new exe with a clean environment.
+    # PyInstaller adds its _MEI temp dir to PATH; the child must not inherit
+    # it because that dir will be deleted when this process exits, which
+    # breaks Qt's platform-plugin lookup in the new process.
     try:
-        subprocess.Popen([current_exe])
+        env = os.environ.copy()
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            parts = env.get("PATH", "").split(os.pathsep)
+            env["PATH"] = os.pathsep.join(p for p in parts if p != meipass)
+        env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+        env.pop("QT_PLUGIN_PATH", None)
+        subprocess.Popen([current_exe], env=env, cwd=current_dir)
     except Exception:
         pass
     return True
