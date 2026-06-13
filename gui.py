@@ -220,10 +220,11 @@ class SmartDateEdit(QDateEdit):
 
 COL_TITLE = 0
 COL_LENGTH = 1
-COL_DATE = 2
-COL_DAYS_LEFT = 3
-COL_PLATFORM = 4
-COL_LINK = 5
+COL_EPISODES = 2
+COL_DATE = 3
+COL_DAYS_LEFT = 4
+COL_PLATFORM = 5
+COL_LINK = 6
 
 
 def get_resource_path(relative_path):
@@ -490,8 +491,8 @@ class MovieWatchlistApp(QWidget):
         input_layout.addWidget(self.clear_btn)
         layout.addLayout(input_layout)
 
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Title", "Length", "Date", "Days Left", "Platform", "Link"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Title", "Length", "Episodes", "Date", "Days Left", "Platform", "Link"])
         for col in range(self.table.columnCount()):
             self.table.horizontalHeaderItem(col).setTextAlignment(Qt.AlignCenter)
         self.table.setItemDelegate(NoFocusDelegate(self))
@@ -505,6 +506,7 @@ class MovieWatchlistApp(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setColumnWidth(COL_TITLE, 220)
         self.table.setColumnWidth(COL_LENGTH, 120)
+        self.table.setColumnWidth(COL_EPISODES, 80)
         self.table.setColumnWidth(COL_DATE, 95)
         self.table.setColumnWidth(COL_DAYS_LEFT, 90)
         self.table.setColumnWidth(COL_PLATFORM, 140)
@@ -537,9 +539,9 @@ class MovieWatchlistApp(QWidget):
         layout.addLayout(button_layout)
         self.setLayout(layout)
 
-        for url, title, length, date, platform in load_movies():
-            self.manager.add_movie(Movie(url, title, length, date, platform))
-            self._insert_row(url, title, length, date, platform)
+        for url, title, length, date, platform, episodes in load_movies():
+            self.manager.add_movie(Movie(url, title, length, date, platform, episodes))
+            self._insert_row(url, title, length, date, platform, episodes)
         # Default sort — overridden by _restore_settings if saved prefs exist
         self.table.sortItems(COL_DAYS_LEFT, Qt.AscendingOrder)
         self.table.horizontalHeader().setSortIndicator(COL_DAYS_LEFT, Qt.AscendingOrder)
@@ -555,7 +557,7 @@ class MovieWatchlistApp(QWidget):
             return str(days)
         return f"{abs(days)}d ago"
 
-    def _insert_row(self, url, title, length, date, platform=""):
+    def _insert_row(self, url, title, length, date, platform="", episodes="-"):
         self.table.blockSignals(True)
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -565,6 +567,8 @@ class MovieWatchlistApp(QWidget):
         length_item = self._make_item(length)
         length_item.setData(Qt.UserRole, self._length_sort_key(length))
         self.table.setItem(row, COL_LENGTH, length_item)
+
+        self.table.setItem(row, COL_EPISODES, self._make_item(episodes))
 
         date_item = self._make_item(date, editable=True)
         date_item.setData(Qt.UserRole, self._date_sort_key(date))
@@ -618,11 +622,11 @@ class MovieWatchlistApp(QWidget):
             date = self.date_input.date().toString(DATE_FORMAT)
         platform = self.platform_input.currentText()
 
-        title, length = fetch_movie_info(url)
+        title, length, episodes = fetch_movie_info(url)
         if title and length:
-            movie = Movie(url, title, length, date, platform)
+            movie = Movie(url, title, length, date, platform, episodes)
             self.manager.add_movie(movie)
-            self._insert_row(url, title, length, date, platform)
+            self._insert_row(url, title, length, date, platform, episodes)
             self._clear_inputs()
         else:
             QMessageBox.critical(self, "Error", "Failed to fetch movie data.")
@@ -650,7 +654,7 @@ class MovieWatchlistApp(QWidget):
         dialog = EditDialog(current_url, current_date, current_platform, self)
         if dialog.exec():
             new_url, new_date, new_platform = dialog.get_data()
-            new_title, new_length = fetch_movie_info(new_url)
+            new_title, new_length, new_episodes = fetch_movie_info(new_url)
             if new_title and new_length:
                 self.table.blockSignals(True)
                 self.table.setItem(selected, COL_TITLE, self._make_item(new_title))
@@ -658,6 +662,8 @@ class MovieWatchlistApp(QWidget):
                 length_item = self._make_item(new_length)
                 length_item.setData(Qt.UserRole, self._length_sort_key(new_length))
                 self.table.setItem(selected, COL_LENGTH, length_item)
+
+                self.table.setItem(selected, COL_EPISODES, self._make_item(new_episodes))
 
                 date_item = self._make_item(new_date, editable=True)
                 date_item.setData(Qt.UserRole, self._date_sort_key(new_date))
@@ -679,7 +685,7 @@ class MovieWatchlistApp(QWidget):
                 link_item.setForeground(QtGui.QColor("blue"))
                 self.table.setItem(selected, COL_LINK, link_item)
                 self.table.blockSignals(False)
-                self.manager.edit_movie(selected, Movie(new_url, new_title, new_length, new_date, new_platform))
+                self.manager.edit_movie(selected, Movie(new_url, new_title, new_length, new_date, new_platform, new_episodes))
             else:
                 QMessageBox.warning(self, "Error", "Failed to fetch movie info.")
 
@@ -745,10 +751,11 @@ class MovieWatchlistApp(QWidget):
             for row in range(self.table.rowCount()):
                 title = self.table.item(row, COL_TITLE).text()
                 length = self.table.item(row, COL_LENGTH).text()
+                episodes = self.table.item(row, COL_EPISODES).text()
                 date = self.table.item(row, COL_DATE).text()
                 platform = self.table.item(row, COL_PLATFORM).text()
                 url = self.table.item(row, COL_LINK).text()
-                movies.append(Movie(url, title, length, date, platform))
+                movies.append(Movie(url, title, length, date, platform, episodes))
             try:
                 export_to_json(movies, filepath)
                 QMessageBox.information(self, "Success", "Movies exported successfully.")
@@ -760,10 +767,10 @@ class MovieWatchlistApp(QWidget):
         if filepath:
             try:
                 imported = import_from_json(filepath)
-                for url, title, length, date, platform in imported:
-                    movie = Movie(url, title, length, date, platform)
+                for url, title, length, date, platform, episodes in imported:
+                    movie = Movie(url, title, length, date, platform, episodes)
                     self.manager.add_movie(movie)
-                    self._insert_row(url, title, length, date, platform)
+                    self._insert_row(url, title, length, date, platform, episodes)
                 QMessageBox.information(self, "Success", f"Imported {len(imported)} movies.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to import: {e}")
@@ -773,11 +780,12 @@ class MovieWatchlistApp(QWidget):
         for row in range(self.table.rowCount()):
             title = self.table.item(row, COL_TITLE).text()
             length = self.table.item(row, COL_LENGTH).text()
+            episodes = self.table.item(row, COL_EPISODES).text()
             date = self.table.item(row, COL_DATE).text()
             platform = self.table.item(row, COL_PLATFORM).text()
             url_item = self.table.item(row, COL_LINK)
             url = url_item.text() if url_item else ""
-            self.manager.add_movie(Movie(url, title, length, date, platform))
+            self.manager.add_movie(Movie(url, title, length, date, platform, episodes))
         save_movies(self.manager.movies)
         self._save_settings()
 
