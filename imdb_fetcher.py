@@ -55,10 +55,10 @@ def _get_episode_count(imdb_id, imdb_url):
 
 
 def fetch_movie_info(imdb_url):
-    """Fetch title, runtime, and episode count from an IMDB URL.
+    """Fetch title, runtime, episode count, and IMDb rating from an IMDB URL.
 
-    Returns (title, runtime, episodes) where episodes is '-' for non-series.
-    Returns (None, None, None) on failure.
+    Returns (title, runtime, episodes, imdb_rating).
+    Returns (None, None, None, None) on failure.
     """
     try:
         match = re.search(r'(tt\d+)', imdb_url)
@@ -95,12 +95,14 @@ def fetch_movie_info(imdb_url):
                     if data.get("Type") == "series":
                         episodes = _get_episode_count(imdb_id, imdb_url)
 
-                    return title, runtime, episodes
+                    imdb_rating = data.get("imdbRating") or "-"
+
+                    return title, runtime, episodes, imdb_rating
             except Exception:
                 continue
 
-        return None, None, None
+        return None, None, None, None
 
     except Exception as e:
         print(f"Error fetching movie info: {e}")
-        return None, None, None
+        return None, None, None, None

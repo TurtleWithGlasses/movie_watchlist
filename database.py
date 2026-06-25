@@ -12,11 +12,12 @@ def init_db():
             length TEXT,
             date TEXT,
             platform TEXT DEFAULT '',
-            episodes TEXT DEFAULT '-'
+            episodes TEXT DEFAULT '-',
+            imdb_rating TEXT DEFAULT '-'
         )
     """)
     # Migrate existing databases that don't have these columns yet
-    for col, default in [("platform", "''"), ("episodes", "'-'")]:
+    for col, default in [("platform", "''"), ("episodes", "'-'"), ("imdb_rating", "'-'")]:
         try:
             cursor.execute(f"ALTER TABLE movies ADD COLUMN {col} TEXT DEFAULT {default}")
         except sqlite3.OperationalError:
@@ -30,8 +31,8 @@ def save_movies(movies):
     cursor.execute("DELETE FROM movies")
     for movie in movies:
         cursor.execute(
-            "INSERT INTO movies (url, title, length, date, platform, episodes) VALUES (?, ?, ?, ?, ?, ?)",
-            (movie.url, movie.title, movie.length, movie.watch_date, movie.platform, movie.episodes)
+            "INSERT INTO movies (url, title, length, date, platform, episodes, imdb_rating) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (movie.url, movie.title, movie.length, movie.watch_date, movie.platform, movie.episodes, movie.imdb_rating)
         )
     conn.commit()
     conn.close()
@@ -39,7 +40,7 @@ def save_movies(movies):
 def load_movies():
     conn = sqlite3.connect("watchlist.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT url, title, length, date, platform, episodes FROM movies")
+    cursor.execute("SELECT url, title, length, date, platform, episodes, imdb_rating FROM movies")
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -53,6 +54,7 @@ def export_to_json(movies, filepath):
             "watch_date": movie.watch_date,
             "platform": movie.platform,
             "episodes": movie.episodes,
+            "imdb_rating": movie.imdb_rating,
         }
         for movie in movies
     ]
@@ -64,6 +66,6 @@ def import_from_json(filepath):
         data = json.load(f)
     return [
         (item['url'], item['title'], item['length'], item['watch_date'],
-         item.get('platform', ''), item.get('episodes', '-'))
+         item.get('platform', ''), item.get('episodes', '-'), item.get('imdb_rating', '-'))
         for item in data
     ]
