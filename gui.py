@@ -418,6 +418,10 @@ class MovieWatchlistApp(QWidget):
         date = QDate.fromString(date_str, DATE_FORMAT)
         return QDate.currentDate().daysTo(date) if date.isValid() else float('inf')
 
+    def _apply_sort(self):
+        if self._sort_col >= 0:
+            self.table.sortItems(self._sort_col, self._sort_order)
+
     def _on_header_clicked(self, col):
         if col == self._sort_col:
             self._sort_order = (Qt.DescendingOrder if self._sort_order == Qt.AscendingOrder
@@ -630,6 +634,7 @@ class MovieWatchlistApp(QWidget):
             movie = Movie(url, title, length, date, platform, episodes, imdb_rating)
             self.manager.add_movie(movie)
             self._insert_row(url, title, length, date, platform, episodes, imdb_rating)
+            self._apply_sort()
             self._clear_inputs()
         else:
             QMessageBox.critical(self, "Error", "Failed to fetch movie data.")
@@ -689,6 +694,7 @@ class MovieWatchlistApp(QWidget):
                 link_item.setForeground(QtGui.QColor("blue"))
                 self.table.setItem(selected, COL_LINK, link_item)
                 self.table.blockSignals(False)
+                self._apply_sort()
                 self.manager.edit_movie(selected, Movie(new_url, new_title, new_length, new_date, new_platform, new_episodes, new_imdb_rating))
             else:
                 QMessageBox.warning(self, "Error", "Failed to fetch movie info.")
@@ -776,6 +782,7 @@ class MovieWatchlistApp(QWidget):
                     movie = Movie(url, title, length, date, platform, episodes, imdb_rating)
                     self.manager.add_movie(movie)
                     self._insert_row(url, title, length, date, platform, episodes, imdb_rating)
+                self._apply_sort()
                 QMessageBox.information(self, "Success", f"Imported {len(imported)} movies.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to import: {e}")
