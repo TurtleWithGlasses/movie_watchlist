@@ -1,5 +1,5 @@
 class Movie:
-    def __init__(self, url, title, length, watch_date, platform="", episodes="-", imdb_rating="-"):
+    def __init__(self, url, title, length, watch_date, platform="", episodes="-", imdb_rating="-", flagged=False):
         self.url = url
         self.title = title
         self.length = length
@@ -7,3 +7,4 @@ class Movie:
         self.platform = platform
         self.episodes = episodes
         self.imdb_rating = imdb_rating
+        self.flagged = bool(flagged)

@@ -13,9 +13,10 @@ from PySide6.QtWidgets import QStyle
 import webbrowser
 import re
 from imdb_fetcher import fetch_movie_info
-from movie_manager import MovieManager
 from models import Movie
-from database import init_db, save_movies, load_movies, export_to_json, import_from_json
+from database import (init_db, save_movies, load_movies, export_to_json,
+                      import_from_json, migrate_legacy_db)
+from paths import DB_PATH
 from version import __version__
 from updater import (get_latest_release, is_newer, download_update,
                      apply_update, do_staged_update, cleanup_old_version)
@@ -24,6 +25,7 @@ from cloud_sync import is_configured, download_db, upload_db
 DATE_FORMAT = "dd/MM/yyyy"
 _NULL_DATE = QDate(2000, 1, 1)  # sentinel for "no date selected"
 _HAS_FOCUS_MASK = 0x100  # QStyle.StateFlag.HasFocus — stable Qt constant, avoids strict-enum int() issues
+_IMDB_URL_RE = re.compile(r'https?://(www\.)?imdb\.com/title/tt\d+')
 
 APP_STYLE = """
 /* ── Global ────────────────────────────────── */
@@ -226,6 +228,12 @@ COL_DATE = 4
 COL_DAYS_LEFT = 5
 COL_PLATFORM = 6
 COL_LINK = 7
+COL_FLAG = 8  # displayed as the first column (see init_ui)
+
+FLAG_ON = "⚑"
+FLAG_OFF = "⚐"
+_FLAG_ON_COLOR = "#DC2626"
+_FLAG_OFF_COLOR = "#CBD5E1"
 
 
 def get_resource_path(relative_path):
@@ -288,6 +296,22 @@ class UpdateCheckWorker(QThread):
         tag, url = get_latest_release()
         if tag and url and is_newer(__version__, tag):
             self.update_available.emit(tag, url)
+
+
+class FetchWorker(QThread):
+    """Runs fetch_movie_info off the UI thread."""
+    result = Signal(object)  # (title, runtime, episodes, imdb_rating)
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+
+    def run(self):
+        try:
+            info = fetch_movie_info(self.url)
+        except Exception:
+            info = (None, None, None, None)
+        self.result.emit(info)
 
 
 class DownloadWorker(QThread):
@@ -380,13 +404,20 @@ class MovieWatchlistApp(QWidget):
         self.setWindowTitle(f"Movie Watchlist v{__version__}")
         icon_path = get_resource_path(os.path.join("assets", "movie-icon-15159.png"))
         self.setWindowIcon(QIcon(icon_path))
-        self.manager = MovieManager()
         self._sort_col = COL_DAYS_LEFT
         self._sort_order = Qt.AscendingOrder
+        self._fetch_worker = None
+        self._fetch_ctx = None  # what to do with the result of the in-flight fetch
         self.init_ui()
         self._restore_settings()
-        self.table.cellClicked.connect(self.open_link)
+        self.table.cellClicked.connect(self.on_cell_clicked)
         self.table.itemChanged.connect(self.on_item_changed)
+
+        # Recompute "Days Left" when the date rolls over while the app is open
+        self._today = QDate.currentDate()
+        self._day_timer = QTimer(self)
+        self._day_timer.timeout.connect(self._check_day_rollover)
+        self._day_timer.start(60_000)
 
     def _make_item(self, text, editable=False):
         item = SortableItem(text)
@@ -446,7 +477,9 @@ class MovieWatchlistApp(QWidget):
             w = s.value(f"col_width_{col}")
             if w is not None:
                 self.table.setColumnWidth(col, int(w))
-        self.table.sortItems(self._sort_col, self._sort_order)
+        # sort_col == -1 means the user ordered rows manually; rows were loaded
+        # in their saved order, so leave them as they are.
+        self._apply_sort()
         self.table.horizontalHeader().setSortIndicator(self._sort_col, self._sort_order)
 
     def _save_settings(self):
@@ -496,8 +529,8 @@ class MovieWatchlistApp(QWidget):
         input_layout.addWidget(self.clear_btn)
         layout.addLayout(input_layout)
 
-        self.table = QTableWidget(0, 8)
-        self.table.setHorizontalHeaderLabels(["Title", "Length", "Episodes", "IMDb", "Date", "Days Left", "Platform", "Link"])
+        self.table = QTableWidget(0, 9)
+        self.table.setHorizontalHeaderLabels(["Title", "Length", "Episodes", "IMDb", "Date", "Days Left", "Platform", "Link", FLAG_ON])
         for col in range(self.table.columnCount()):
             self.table.horizontalHeaderItem(col).setTextAlignment(Qt.AlignCenter)
         self.table.setItemDelegate(NoFocusDelegate(self))
@@ -516,7 +549,11 @@ class MovieWatchlistApp(QWidget):
         self.table.setColumnWidth(COL_DATE, 95)
         self.table.setColumnWidth(COL_DAYS_LEFT, 90)
         self.table.setColumnWidth(COL_PLATFORM, 140)
-        layout.addWidget(self.table)
+        self.table.setColumnWidth(COL_FLAG, 44)
+        self.table.horizontalHeaderItem(COL_FLAG).setToolTip("Flagged — click a cell to toggle")
+        # The flag column is the last logical column (so saved column widths
+        # and sort settings keep their indices) but is shown first.
+        self.table.horizontalHeader().moveSection(COL_FLAG, 0)
 
         button_layout = QHBoxLayout()
         button_layout.setSpacing(8)
@@ -543,14 +580,12 @@ class MovieWatchlistApp(QWidget):
             button_layout.addWidget(btn)
 
         layout.addLayout(button_layout)
+        layout.addWidget(self.table)
         self.setLayout(layout)
 
-        for url, title, length, date, platform, episodes, imdb_rating in load_movies():
-            self.manager.add_movie(Movie(url, title, length, date, platform, episodes, imdb_rating))
-            self._insert_row(url, title, length, date, platform, episodes, imdb_rating)
-        # Default sort — overridden by _restore_settings if saved prefs exist
-        self.table.sortItems(COL_DAYS_LEFT, Qt.AscendingOrder)
-        self.table.horizontalHeader().setSortIndicator(COL_DAYS_LEFT, Qt.AscendingOrder)
+        for row_data in load_movies():
+            self._insert_row(*row_data)
+        # Sorting is applied in _restore_settings (default: Days Left ascending)
 
     def _days_left_text(self, date_str):
         date = QDate.fromString(date_str, DATE_FORMAT)
@@ -563,10 +598,42 @@ class MovieWatchlistApp(QWidget):
             return str(days)
         return f"{abs(days)}d ago"
 
-    def _insert_row(self, url, title, length, date, platform="", episodes="-", imdb_rating="-"):
+    def _set_days_left(self, item, date_str):
+        days_key = self._days_left_sort_key(date_str)
+        item.setText(self._days_left_text(date_str))
+        item.setData(Qt.UserRole, days_key)
+        bg, fg = self._urgency_color(days_key)
+        item.setBackground(bg if bg else QtGui.QBrush())
+        item.setForeground(fg if fg else QtGui.QBrush())
+
+    def _set_flag(self, item, flagged):
+        item.setText(FLAG_ON if flagged else FLAG_OFF)
+        item.setForeground(QtGui.QBrush(QtGui.QColor(_FLAG_ON_COLOR if flagged else _FLAG_OFF_COLOR)))
+        # Sort key: flagged rows come first in ascending order
+        item.setData(Qt.UserRole, 0 if flagged else 1)
+
+    def _is_flagged(self, row):
+        item = self.table.item(row, COL_FLAG)
+        return bool(item) and item.data(Qt.UserRole) == 0
+
+    def toggle_flag(self, row):
+        item = self.table.item(row, COL_FLAG)
+        if item is None:
+            return
         self.table.blockSignals(True)
-        row = self.table.rowCount()
-        self.table.insertRow(row)
+        self._set_flag(item, not self._is_flagged(row))
+        self.table.blockSignals(False)
+        # Deliberately no re-sort: the row stays under the cursor
+
+    def _fill_row(self, row, url, title, length, date, platform="", episodes="-", imdb_rating="-",
+                  flagged=False):
+        """Populate every cell of an existing row. Caller must block signals."""
+        flag_item = self._make_item("")
+        font = flag_item.font()
+        font.setPointSize(13)
+        flag_item.setFont(font)
+        self._set_flag(flag_item, flagged)
+        self.table.setItem(row, COL_FLAG, flag_item)
 
         self.table.setItem(row, COL_TITLE, self._make_item(title))
 
@@ -581,14 +648,8 @@ class MovieWatchlistApp(QWidget):
         date_item.setData(Qt.UserRole, self._date_sort_key(date))
         self.table.setItem(row, COL_DATE, date_item)
 
-        days_key = self._days_left_sort_key(date)
-        days_item = self._make_item(self._days_left_text(date))
-        days_item.setData(Qt.UserRole, days_key)
-        bg, fg = self._urgency_color(days_key)
-        if bg:
-            days_item.setBackground(bg)
-        if fg:
-            days_item.setForeground(fg)
+        days_item = self._make_item("")
+        self._set_days_left(days_item, date)
         self.table.setItem(row, COL_DAYS_LEFT, days_item)
 
         self.table.setItem(row, COL_PLATFORM, self._make_item(platform))
@@ -597,7 +658,27 @@ class MovieWatchlistApp(QWidget):
         link_item.setForeground(QtGui.QColor("blue"))
         self.table.setItem(row, COL_LINK, link_item)
 
+    def _insert_row(self, url, title, length, date, platform="", episodes="-", imdb_rating="-",
+                    flagged=False):
+        self.table.blockSignals(True)
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self._fill_row(row, url, title, length, date, platform, episodes, imdb_rating, flagged)
         self.table.blockSignals(False)
+
+    def _check_day_rollover(self):
+        today = QDate.currentDate()
+        if today == self._today:
+            return
+        self._today = today
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            date_item = self.table.item(row, COL_DATE)
+            days_item = self.table.item(row, COL_DAYS_LEFT)
+            if date_item and days_item:
+                self._set_days_left(days_item, date_item.text())
+        self.table.blockSignals(False)
+        self._apply_sort()
 
     def on_item_changed(self, item):
         if item.column() != COL_DATE:
@@ -607,20 +688,70 @@ class MovieWatchlistApp(QWidget):
         item.setData(Qt.UserRole, self._date_sort_key(date_str))
         days_item = self.table.item(item.row(), COL_DAYS_LEFT)
         if days_item:
-            days_key = self._days_left_sort_key(date_str)
-            days_item.setText(self._days_left_text(date_str))
-            days_item.setData(Qt.UserRole, days_key)
-            bg, fg = self._urgency_color(days_key)
-            days_item.setBackground(bg if bg else QtGui.QBrush())
-            days_item.setForeground(fg if fg else QtGui.QBrush())
+            self._set_days_left(days_item, date_str)
         self.table.blockSignals(False)
+        # Re-sort after the editor has finished committing
+        QTimer.singleShot(0, self._apply_sort)
+
+    # --- background fetching ---
+    def _start_fetch(self, url, ctx):
+        """Fetch IMDb info in a worker thread; _on_fetch_result handles ctx."""
+        self._fetch_ctx = ctx
+        self._set_busy(True)
+        self._fetch_worker = FetchWorker(url)
+        self._fetch_worker.result.connect(self._on_fetch_result)
+        self._fetch_worker.finished.connect(self._on_fetch_finished)
+        self._fetch_worker.start()
+
+    def _set_busy(self, busy):
+        # Buttons that add, replace or reorder rows stay disabled while a
+        # fetch is in flight so the target row can't disappear under it.
+        for btn in (self.add_button, self.edit_button, self.remove_button,
+                    self.up_button, self.down_button):
+            btn.setEnabled(not busy)
+        self.add_button.setText("Fetching…" if busy else "Add")
+
+    def _on_fetch_finished(self):
+        self._set_busy(False)
+        self._fetch_worker = None
+
+    def _on_fetch_result(self, info):
+        ctx, self._fetch_ctx = self._fetch_ctx, None
+        if ctx is None:
+            return
+        title, length, episodes, imdb_rating = info
+        ok = bool(title and length)
+        if ctx["kind"] == "add":
+            if ok:
+                self._insert_row(ctx["url"], title, length, ctx["date"], ctx["platform"],
+                                 episodes, imdb_rating)
+                self._apply_sort()
+                self._clear_inputs()
+            else:
+                QMessageBox.critical(self, "Error", "Failed to fetch movie data.")
+        else:  # edit
+            if not ok:
+                QMessageBox.warning(self, "Error", "Failed to fetch movie info.")
+                return
+            try:
+                row = self.table.row(ctx["anchor"])  # row may have moved by sorting
+            except RuntimeError:
+                row = -1
+            if row < 0:
+                return
+            self.table.blockSignals(True)
+            # Read the flag now, not at edit start — it may have been toggled meanwhile
+            self._fill_row(row, ctx["url"], title, length, ctx["date"], ctx["platform"],
+                           episodes, imdb_rating, self._is_flagged(row))
+            self.table.blockSignals(False)
+            self._apply_sort()
 
     def add_movie(self):
         url = self.url_input.text().strip()
         if not url:
             QMessageBox.warning(self, "Warning", "Please enter an IMDB URL.")
             return
-        if not re.match(r'https?://(www\.)?imdb\.com/title/tt\d+', url):
+        if not _IMDB_URL_RE.match(url):
             QMessageBox.warning(self, "Warning", "Please enter a valid IMDB URL.\nExample: https://www.imdb.com/title/tt1234567/")
             return
 
@@ -628,16 +759,7 @@ class MovieWatchlistApp(QWidget):
         if self.date_input.date() != _NULL_DATE:
             date = self.date_input.date().toString(DATE_FORMAT)
         platform = self.platform_input.currentText()
-
-        title, length, episodes, imdb_rating = fetch_movie_info(url)
-        if title and length:
-            movie = Movie(url, title, length, date, platform, episodes, imdb_rating)
-            self.manager.add_movie(movie)
-            self._insert_row(url, title, length, date, platform, episodes, imdb_rating)
-            self._apply_sort()
-            self._clear_inputs()
-        else:
-            QMessageBox.critical(self, "Error", "Failed to fetch movie data.")
+        self._start_fetch(url, {"kind": "add", "url": url, "date": date, "platform": platform})
 
     def _clear_inputs(self):
         self.url_input.clear()
@@ -647,8 +769,11 @@ class MovieWatchlistApp(QWidget):
 
     def remove_movie(self):
         selected = self.table.currentRow()
-        if selected >= 0:
-            self.manager.remove_movie(selected)
+        if selected < 0:
+            return
+        title = self.table.item(selected, COL_TITLE).text()
+        answer = QMessageBox.question(self, "Remove", f'Remove "{title}" from the list?')
+        if answer == QMessageBox.StandardButton.Yes:
             self.table.removeRow(selected)
 
     def edit_movie(self):
@@ -660,56 +785,27 @@ class MovieWatchlistApp(QWidget):
         current_platform = self.table.item(selected, COL_PLATFORM).text()
 
         dialog = EditDialog(current_url, current_date, current_platform, self)
-        if dialog.exec():
-            new_url, new_date, new_platform = dialog.get_data()
-            new_title, new_length, new_episodes, new_imdb_rating = fetch_movie_info(new_url)
-            if new_title and new_length:
-                self.table.blockSignals(True)
-                self.table.setItem(selected, COL_TITLE, self._make_item(new_title))
-
-                length_item = self._make_item(new_length)
-                length_item.setData(Qt.UserRole, self._length_sort_key(new_length))
-                self.table.setItem(selected, COL_LENGTH, length_item)
-
-                self.table.setItem(selected, COL_EPISODES, self._make_item(new_episodes))
-                self.table.setItem(selected, COL_RATING, self._make_item(new_imdb_rating))
-
-                date_item = self._make_item(new_date, editable=True)
-                date_item.setData(Qt.UserRole, self._date_sort_key(new_date))
-                self.table.setItem(selected, COL_DATE, date_item)
-
-                new_days_key = self._days_left_sort_key(new_date)
-                days_item = self._make_item(self._days_left_text(new_date))
-                days_item.setData(Qt.UserRole, new_days_key)
-                bg, fg = self._urgency_color(new_days_key)
-                if bg:
-                    days_item.setBackground(bg)
-                if fg:
-                    days_item.setForeground(fg)
-                self.table.setItem(selected, COL_DAYS_LEFT, days_item)
-
-                self.table.setItem(selected, COL_PLATFORM, self._make_item(new_platform))
-
-                link_item = self._make_item(new_url)
-                link_item.setForeground(QtGui.QColor("blue"))
-                self.table.setItem(selected, COL_LINK, link_item)
-                self.table.blockSignals(False)
-                self._apply_sort()
-                self.manager.edit_movie(selected, Movie(new_url, new_title, new_length, new_date, new_platform, new_episodes, new_imdb_rating))
-            else:
-                QMessageBox.warning(self, "Error", "Failed to fetch movie info.")
+        if not dialog.exec():
+            return
+        new_url, new_date, new_platform = dialog.get_data()
+        if not _IMDB_URL_RE.match(new_url):
+            QMessageBox.warning(self, "Warning", "Please enter a valid IMDB URL.\nExample: https://www.imdb.com/title/tt1234567/")
+            return
+        self._start_fetch(new_url, {
+            "kind": "edit",
+            "anchor": self.table.item(selected, COL_TITLE),
+            "url": new_url, "date": new_date, "platform": new_platform,
+        })
 
     def move_up(self):
         row = self.table.currentRow()
         if row > 0:
-            self.manager.move_up(row)
             self.swap_rows(row, row - 1)
             self.table.selectRow(row - 1)
 
     def move_down(self):
         row = self.table.currentRow()
-        if row < self.table.rowCount() - 1:
-            self.manager.move_down(row)
+        if 0 <= row < self.table.rowCount() - 1:
             self.swap_rows(row, row + 1)
             self.table.selectRow(row + 1)
 
@@ -729,6 +825,7 @@ class MovieWatchlistApp(QWidget):
             new1.setForeground(fg2)
             new1.setBackground(bg2)
             new1.setFlags(flags2)
+            new1.setFont(item2.font())
             new1.setData(Qt.UserRole, key2)
 
             new2 = SortableItem(text1)
@@ -736,6 +833,7 @@ class MovieWatchlistApp(QWidget):
             new2.setForeground(fg1)
             new2.setBackground(bg1)
             new2.setFlags(flags1)
+            new2.setFont(item1.font())
             new2.setData(Qt.UserRole, key1)
 
             self.table.setItem(row1, col, new1)
@@ -744,6 +842,12 @@ class MovieWatchlistApp(QWidget):
         # Manual reorder clears the active sort so re-sort doesn't undo the move
         self._sort_col = -1
         self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+
+    def on_cell_clicked(self, row, column):
+        if column == COL_FLAG:
+            self.toggle_flag(row)
+        elif column == COL_LINK:
+            self.open_link(row, column)
 
     def open_link(self, row, column):
         if column == COL_LINK:
@@ -757,18 +861,8 @@ class MovieWatchlistApp(QWidget):
             return
         filepath, _ = QFileDialog.getSaveFileName(self, "Export Movies", "", "JSON Files (*.json)")
         if filepath:
-            movies = []
-            for row in range(self.table.rowCount()):
-                title = self.table.item(row, COL_TITLE).text()
-                length = self.table.item(row, COL_LENGTH).text()
-                episodes = self.table.item(row, COL_EPISODES).text()
-                imdb_rating = self.table.item(row, COL_RATING).text()
-                date = self.table.item(row, COL_DATE).text()
-                platform = self.table.item(row, COL_PLATFORM).text()
-                url = self.table.item(row, COL_LINK).text()
-                movies.append(Movie(url, title, length, date, platform, episodes, imdb_rating))
             try:
-                export_to_json(movies, filepath)
+                export_to_json(self._movies_from_table(), filepath)
                 QMessageBox.information(self, "Success", "Movies exported successfully.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to export: {e}")
@@ -778,34 +872,37 @@ class MovieWatchlistApp(QWidget):
         if filepath:
             try:
                 imported = import_from_json(filepath)
-                for url, title, length, date, platform, episodes, imdb_rating in imported:
-                    movie = Movie(url, title, length, date, platform, episodes, imdb_rating)
-                    self.manager.add_movie(movie)
-                    self._insert_row(url, title, length, date, platform, episodes, imdb_rating)
+                for row_data in imported:
+                    self._insert_row(*row_data)
                 self._apply_sort()
                 QMessageBox.information(self, "Success", f"Imported {len(imported)} movies.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to import: {e}")
 
+    def _movies_from_table(self):
+        """The table is the single source of truth, in its current row order."""
+        def text(row, col):
+            item = self.table.item(row, col)
+            return item.text() if item else ""
+        return [
+            Movie(text(r, COL_LINK), text(r, COL_TITLE), text(r, COL_LENGTH),
+                  text(r, COL_DATE), text(r, COL_PLATFORM), text(r, COL_EPISODES),
+                  text(r, COL_RATING), self._is_flagged(r))
+            for r in range(self.table.rowCount())
+        ]
+
     def closeEvent(self, event):
-        self.manager.movies.clear()
-        for row in range(self.table.rowCount()):
-            title = self.table.item(row, COL_TITLE).text()
-            length = self.table.item(row, COL_LENGTH).text()
-            episodes = self.table.item(row, COL_EPISODES).text()
-            imdb_rating = self.table.item(row, COL_RATING).text()
-            date = self.table.item(row, COL_DATE).text()
-            platform = self.table.item(row, COL_PLATFORM).text()
-            url_item = self.table.item(row, COL_LINK)
-            url = url_item.text() if url_item else ""
-            self.manager.add_movie(Movie(url, title, length, date, platform, episodes, imdb_rating))
-        save_movies(self.manager.movies)
+        # Don't destroy a running fetch thread (Qt aborts the process if a
+        # QThread is destroyed while running)
+        if self._fetch_worker is not None:
+            self._fetch_worker.wait()
+        save_movies(self._movies_from_table())
         self._save_settings()
 
         # Push updated db to Google Drive (silent if not configured)
         try:
             if is_configured():
-                upload_db("watchlist.db")
+                upload_db(DB_PATH)
         except Exception as e:
             print(f"Cloud sync upload skipped: {e}")
 
@@ -862,17 +959,23 @@ class EditDialog(QDialog):
         date = ""
         if self.date_input.date() != _NULL_DATE:
             date = self.date_input.date().toString(DATE_FORMAT)
-        return self.url_input.text(), date, self.platform_input.currentText()
+        return self.url_input.text().strip(), date, self.platform_input.currentText()
 
 
 def run_app():
     # Remove _old_version.exe left over from a previous update (if any)
     cleanup_old_version()
 
-    # Pull latest db from Google Drive before opening (silent if not configured)
+    # Move a db left in the working directory by older builds to its fixed home
+    try:
+        migrate_legacy_db()
+    except Exception as e:
+        print(f"Legacy db migration skipped: {e}")
+
+    # Pull db from Google Drive if it's newer than the local copy (silent if not configured)
     try:
         if is_configured():
-            download_db("watchlist.db")
+            download_db(DB_PATH)
     except Exception as e:
         print(f"Cloud sync download skipped: {e}")
 

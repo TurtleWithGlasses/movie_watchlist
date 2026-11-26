@@ -13,7 +13,7 @@ Setup (one-time):
 
 import io
 import os
-import sys
+from datetime import datetime
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -21,22 +21,18 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
+from paths import app_dir
+
 DRIVE_FILE_ID = "1GOlrITdRU87fWTSPPIj5MrEEJuQ9Rgyn"
 _SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
-def _app_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-
 def _credentials_path():
-    return os.path.join(_app_dir(), "credentials.json")
+    return os.path.join(app_dir(), "credentials.json")
 
 
 def _token_path():
-    return os.path.join(_app_dir(), "token.json")
+    return os.path.join(app_dir(), "token.json")
 
 
 def is_configured():
@@ -65,14 +61,35 @@ def _get_service():
 
 
 def download_db(local_path):
-    """Overwrite local_path with the file from Google Drive."""
+    """Replace local_path with the Google Drive copy if the Drive copy is newer.
+
+    Downloads to a temp file first so a failed or partial download never
+    truncates the local db. Returns True if the local file was replaced.
+    """
     service = _get_service()
-    request = service.files().get_media(fileId=DRIVE_FILE_ID)
-    with io.FileIO(local_path, "wb") as fh:
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
+
+    if os.path.exists(local_path):
+        meta = service.files().get(fileId=DRIVE_FILE_ID, fields="modifiedTime").execute()
+        remote_ts = datetime.fromisoformat(meta["modifiedTime"].replace("Z", "+00:00")).timestamp()
+        if os.path.getmtime(local_path) >= remote_ts:
+            return False  # local has changes not yet uploaded — keep them
+
+    tmp_path = local_path + ".download"
+    try:
+        request = service.files().get_media(fileId=DRIVE_FILE_ID)
+        with io.FileIO(tmp_path, "wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        with open(tmp_path, "rb") as fh:
+            if fh.read(16) != b"SQLite format 3\x00":
+                raise ValueError("Downloaded file is not a SQLite database")
+        os.replace(tmp_path, local_path)
+        return True
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def upload_db(local_path):

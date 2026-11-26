@@ -63,7 +63,7 @@ def fetch_movie_info(imdb_url):
     try:
         match = re.search(r'(tt\d+)', imdb_url)
         if not match:
-            return None, None, None
+            return None, None, None, None
 
         imdb_id = match.group(1)
         api_keys = ["c7921dc6", "f84fc31d", "68fd98ab", "trilogy"]
